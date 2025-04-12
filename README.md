@@ -1,11 +1,15 @@
-﻿# CalendarSync
+﻿![CalendarSync Illustrations](illustration.png "Calendar Sync")
 
-**CalendarSync** is a lightweight .NET-based background application that performs a **one-way sync from Microsoft Outlook to Apple iCloud Calendar** using CalDAV. It is optimized to run silently as a Scheduled Task on Windows systems, without relying on Microsoft Graph or full Exchange integration.
+
+# CalendarSync
+
+**CalendarSync** is a lightweight .NET-based background application that performs a **one-way sync from Microsoft Outlook to Apple iCloud Calendar** using CalDAV. 
+As a COM-Interop application it is optimized to run silently as a Scheduled Task on Windows systems, without relying on Microsoft Graph or full Exchange integration.
 
 ## Features
 
-- Syncs events from **local Outlook calendar** to **Apple iCloud calendar**
-- Adds a **10-minute** and **3-minute notification** for every synced event
+- One-Way syncs events from **local Outlook calendar** to **Apple iCloud calendar**
+- Adds a **10-minute** and **3-minute alarm notification** for every synced event
 - Runs silently and logs to `sync.log`
 - Designed for **restricted corporate environments** — no UI required
 
