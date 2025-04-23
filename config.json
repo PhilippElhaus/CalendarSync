@@ -5,5 +5,6 @@
 	"PrincipalId": "1234567890",
 	"WorkCalendarId": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
 	"InitialWaitSeconds": 30,
-	"SyncIntervalMinutes": 3
+	"SyncIntervalMinutes": 3,
+	"SyncDaysIntoFuture": 30
 }

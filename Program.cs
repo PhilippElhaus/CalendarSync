@@ -46,5 +46,7 @@ namespace CalendarSync
 		public string WorkCalendarId { get; set; }
 		public int InitialWaitSeconds { get; set; } = 60;
 		public int SyncIntervalMinutes { get; set; } = 3;
+		public int SyncDaysIntoFuture { get; set; } = 30;
+
 	}
 }

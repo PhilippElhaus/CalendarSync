@@ -118,7 +118,7 @@ public class CalendarSyncService : BackgroundService
 			items.IncludeRecurrences = false;
 			items.Sort("[Start]");
 			DateTime start = DateTime.Today;
-			DateTime end = start.AddDays(30);
+			DateTime end = start.AddDays(_config.SyncDaysIntoFuture);
 			string filter = $"[Start] >= '{start:g}' AND [Start] <= '{end:g}' OR [End] >= '{start:g}' AND [End] <= '{end:g}'";
 			var restrictedItems = items.Restrict(filter);
 			var outlookEvents = GetOutlookEvents(restrictedItems);
@@ -207,13 +207,36 @@ public class CalendarSyncService : BackgroundService
 	private Dictionary<string, Outlook.AppointmentItem> GetOutlookEvents(Outlook.Items items)
 	{
 		var events = new Dictionary<string, Outlook.AppointmentItem>();
+
+		items.IncludeRecurrences = true;
 		foreach (object item in items)
 		{
 			if (item is Outlook.AppointmentItem appt)
 			{
-				string uid = appt.EntryID ?? Guid.NewGuid().ToString();
+				// Skip cancelled meetings
+				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+					continue;
 
+				string uid = appt.EntryID ?? Guid.NewGuid().ToString();
 				events[uid] = appt;
+
+				if (appt.IsRecurring)
+				{
+					var pattern = appt.GetRecurrencePattern();
+					if (pattern != null)
+					{
+						foreach (Outlook.Exception ex in pattern.Exceptions)
+						{
+							var exAppt = ex.AppointmentItem;
+							if (exAppt != null && exAppt.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled)
+							{
+								string exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
+								events[exUid] = exAppt;
+							}
+						}
+						Marshal.ReleaseComObject(pattern);
+					}
+				}
 			}
 		}
 		return events;
