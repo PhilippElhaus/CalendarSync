@@ -18,6 +18,8 @@ public class CalendarSyncService : BackgroundService
 	private static bool _isFirstRun = true;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
+	private readonly HashSet<DateTime> _brokenExceptionDates = new();
+
 
 	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger)
 	{
@@ -238,7 +240,8 @@ public class CalendarSyncService : BackgroundService
 							}
 							catch (COMException comEx)
 							{
-								_logger.LogWarning(comEx, "Skipped broken recurrence exception.");
+								_logger.LogDebug(comEx, "Skipped broken recurrence exception.");
+								_brokenExceptionDates.Add(ex.OriginalDate);
 							}
 						}
 						Marshal.ReleaseComObject(pattern);
@@ -253,6 +256,29 @@ public class CalendarSyncService : BackgroundService
 	{
 		string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
+
+		var orphanedUids = new HashSet<string>();
+
+		foreach (var iCloudUid in iCloudEvents.Keys)
+		{
+			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
+			var response = await client.GetAsync(eventUrl);
+			if (!response.IsSuccessStatusCode)
+				continue;
+
+			var content = await response.Content.ReadAsStringAsync();
+			var calendar = Calendar.Load(content);
+			var ev = calendar.Events.FirstOrDefault();
+			if (ev == null)
+				continue;
+
+			// Check if this matches a broken Outlook exception
+			if (_brokenExceptionDates.Contains(ev.Start.Value.ToLocalTime().Date))
+			{
+				orphanedUids.Add(iCloudUid);
+			}
+		}
+
 		_logger.LogInformation("Found {Count} iCloud events for comparison.", iCloudEvents.Count);
 
 		// Process Outlook events (create/update)
@@ -300,6 +326,19 @@ public class CalendarSyncService : BackgroundService
 				}
 			}
 		}
+
+		foreach (var uid in orphanedUids)
+		{
+			string eventUrl = $"{calendarUrl}{uid}.ics";
+			var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
+			var response = await client.SendAsync(request);
+
+			if (response.IsSuccessStatusCode)
+				_logger.LogInformation("Deleted broken exception event UID {Uid}", uid);
+			else
+				_logger.LogWarning("Failed to delete broken exception UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
+		}
+
 	}
 
 	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl)
