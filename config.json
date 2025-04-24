@@ -6,5 +6,7 @@
 	"WorkCalendarId": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
 	"InitialWaitSeconds": 30,
 	"SyncIntervalMinutes": 3,
-	"SyncDaysIntoFuture": 30
+	"SyncDaysIntoFuture": 30,
+	"LogLevel": "Information"
+
 }
