@@ -227,11 +227,18 @@ public class CalendarSyncService : BackgroundService
 					{
 						foreach (Outlook.Exception ex in pattern.Exceptions)
 						{
-							var exAppt = ex.AppointmentItem;
-							if (exAppt != null && exAppt.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled)
+							try
 							{
-								string exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
-								events[exUid] = exAppt;
+								var exAppt = ex.AppointmentItem;
+								if (exAppt != null && exAppt.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled)
+								{
+									string exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
+									events[exUid] = exAppt;
+								}
+							}
+							catch (COMException comEx)
+							{
+								_logger.LogWarning(comEx, "Skipped broken recurrence exception.");
 							}
 						}
 						Marshal.ReleaseComObject(pattern);
