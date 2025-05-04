@@ -219,12 +219,31 @@ public class CalendarSyncService : BackgroundService
 				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
 					continue;
 
-				string uid = appt.EntryID ?? Guid.NewGuid().ToString();
+				string uid;
+				try
+				{
+					uid = appt.EntryID ?? Guid.NewGuid().ToString();
+				}
+				catch (COMException ex)
+				{
+					_logger.LogDebug(ex, "Failed to access EntryID for an Outlook appointment. Skipping item.");
+					continue;
+				}
+
 				events[uid] = appt;
 
 				if (appt.IsRecurring)
 				{
-					var pattern = appt.GetRecurrencePattern();
+					Outlook.RecurrencePattern pattern = null;
+					try
+					{
+						pattern = appt.GetRecurrencePattern();
+					}
+					catch (COMException ex)
+					{
+						_logger.LogDebug(ex, "Failed to get recurrence pattern. Skipping recurrence details.");
+					}
+
 					if (pattern != null)
 					{
 						foreach (Outlook.Exception ex in pattern.Exceptions)
@@ -234,7 +253,16 @@ public class CalendarSyncService : BackgroundService
 								var exAppt = ex.AppointmentItem;
 								if (exAppt != null && exAppt.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled)
 								{
-									string exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
+									string exUid;
+									try
+									{
+										exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
+									}
+									catch (COMException innerEx)
+									{
+										_logger.LogDebug(innerEx, "Failed to access EntryID for a recurrence exception. Skipping exception.");
+										continue;
+									}
 									events[exUid] = exAppt;
 								}
 							}
@@ -405,56 +433,74 @@ public class CalendarSyncService : BackgroundService
 
 		if (appt.IsRecurring)
 		{
-			var pattern = appt.GetRecurrencePattern();
+			Outlook.RecurrencePattern pattern = null;
+			try
+			{
+				pattern = appt.GetRecurrencePattern();
+			}
+			catch (COMException ex)
+			{
+				_logger.LogDebug(ex, "Failed to get recurrence pattern. Skipping recurrence rule.");
+			}
+
 			if (pattern != null)
 			{
-				var recurrenceRule = new RecurrencePattern
+				try
 				{
-					Frequency = pattern.RecurrenceType switch
+					var recurrenceRule = new RecurrencePattern
 					{
-						Outlook.OlRecurrenceType.olRecursDaily => FrequencyType.Daily,
-						Outlook.OlRecurrenceType.olRecursWeekly => FrequencyType.Weekly,
-						Outlook.OlRecurrenceType.olRecursMonthly => FrequencyType.Monthly,
-						Outlook.OlRecurrenceType.olRecursYearly => FrequencyType.Yearly,
-						_ => FrequencyType.None
-					},
-					Interval = pattern.Interval
-				};
+						Frequency = pattern.RecurrenceType switch
+						{
+							Outlook.OlRecurrenceType.olRecursDaily => FrequencyType.Daily,
+							Outlook.OlRecurrenceType.olRecursWeekly => FrequencyType.Weekly,
+							Outlook.OlRecurrenceType.olRecursMonthly => FrequencyType.Monthly,
+							Outlook.OlRecurrenceType.olRecursYearly => FrequencyType.Yearly,
+							_ => FrequencyType.None
+						},
+						Interval = pattern.Interval
+					};
 
-				if (pattern.RecurrenceType == Outlook.OlRecurrenceType.olRecursWeekly)
-				{
-					var daysOfWeek = new List<WeekDay>();
-					if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olMonday) != 0)
-						daysOfWeek.Add(new WeekDay(DayOfWeek.Monday));
-					if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olTuesday) != 0)
-						daysOfWeek.Add(new WeekDay(DayOfWeek.Tuesday));
-					if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olWednesday) != 0)
-						daysOfWeek.Add(new WeekDay(DayOfWeek.Wednesday));
-					if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olThursday) != 0)
-						daysOfWeek.Add(new WeekDay(DayOfWeek.Thursday));
-					if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olFriday) != 0)
-						daysOfWeek.Add(new WeekDay(DayOfWeek.Friday));
-					if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olSaturday) != 0)
-						daysOfWeek.Add(new WeekDay(DayOfWeek.Saturday));
-					if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olSunday) != 0)
-						daysOfWeek.Add(new WeekDay(DayOfWeek.Sunday));
-					recurrenceRule.ByDay = daysOfWeek;
+					if (pattern.RecurrenceType == Outlook.OlRecurrenceType.olRecursWeekly)
+					{
+						var daysOfWeek = new List<WeekDay>();
+						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olMonday) != 0)
+							daysOfWeek.Add(new WeekDay(DayOfWeek.Monday));
+						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olTuesday) != 0)
+							daysOfWeek.Add(new WeekDay(DayOfWeek.Tuesday));
+						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olWednesday) != 0)
+							daysOfWeek.Add(new WeekDay(DayOfWeek.Wednesday));
+						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olThursday) != 0)
+							daysOfWeek.Add(new WeekDay(DayOfWeek.Thursday));
+						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olFriday) != 0)
+							daysOfWeek.Add(new WeekDay(DayOfWeek.Friday));
+						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olSaturday) != 0)
+							daysOfWeek.Add(new WeekDay(DayOfWeek.Saturday));
+						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olSunday) != 0)
+							daysOfWeek.Add(new WeekDay(DayOfWeek.Sunday));
+						recurrenceRule.ByDay = daysOfWeek;
+					}
+
+					if (pattern.NoEndDate)
+						recurrenceRule.Count = null;
+					else if (pattern.Occurrences > 0)
+						recurrenceRule.Count = pattern.Occurrences;
+					else if (pattern.PatternEndDate != DateTime.MinValue)
+						recurrenceRule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
+
+					calEvent.RecurrenceRules.Add(recurrenceRule);
 				}
-
-				if (pattern.NoEndDate)
-					recurrenceRule.Count = null;
-				else if (pattern.Occurrences > 0)
-					recurrenceRule.Count = pattern.Occurrences;
-				else if (pattern.PatternEndDate != DateTime.MinValue)
-					recurrenceRule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
-
-				calEvent.RecurrenceRules.Add(recurrenceRule);
-				Marshal.ReleaseComObject(pattern);
+				catch (COMException ex)
+				{
+					_logger.LogDebug(ex, "Failed to extract recurrence details from pattern. Skipping recurrence.");
+				}
+				finally
+				{
+					Marshal.ReleaseComObject(pattern);
+				}
 			}
 		}
 
-		// Add 10-minute reminder
-	
+		// Add 10-minute and 3-minute reminders
 		var reminder = new Alarm
 		{
 			Action = AlarmAction.Display,

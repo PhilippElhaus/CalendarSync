@@ -36,10 +36,18 @@ namespace CalendarSync
 					{
 						serilogLevel = parsedLevel;
 					}
+					var logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sync.log");
 
 					var logger = new LoggerConfiguration()
 						.MinimumLevel.Is(serilogLevel)
-						.WriteTo.File(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sync.log"))
+							.WriteTo.File(
+							logFilePath,
+							rollOnFileSizeLimit: true,
+							fileSizeLimitBytes: 1_048_576,
+							rollingInterval: RollingInterval.Infinite,
+							retainedFileCountLimit: 1, // keep only 1 backup: sync.log.bak
+							shared: true
+							)
 						.CreateLogger();
 
 					services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
