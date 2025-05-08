@@ -275,8 +275,10 @@ public class CalendarSyncService : BackgroundService
 		string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
 
+		var iCloudDetailed = new Dictionary<(string uid, string recurrenceId), CalendarEvent>();
 		var orphanedUids = new HashSet<string>();
 
+		// Expand existing iCloud events and map them by UID + optional recurrence-id
 		foreach (var iCloudUid in iCloudEvents.Keys)
 		{
 			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
@@ -290,105 +292,92 @@ public class CalendarSyncService : BackgroundService
 			if (ev == null)
 				continue;
 
-			// Check if this matches a broken Outlook exception
+			string recurrenceKey = ev.RecurrenceId != null ? ev.RecurrenceId.ToString("o") : "";
+			iCloudDetailed[(iCloudUid, recurrenceKey)] = ev;
+
 			if (_brokenExceptionDates.Contains(ev.Start.Value.ToLocalTime().Date))
-			{
 				orphanedUids.Add(iCloudUid);
-			}
 		}
 
-		_logger.LogInformation("Found {Count} iCloud events for comparison.", iCloudEvents.Count);
+		_logger.LogInformation("Expanded iCloud calendar to {Count} detailed events (including overrides).", iCloudDetailed.Count);
 
-		// Process Outlook events (create/update)
 		foreach (var (uid, appt) in outlookEvents)
 		{
 			if (appt == null)
 			{
-				// Cancelled event: delete from iCloud if it exists
-				if (iCloudEvents.ContainsKey(uid))
+				// Cancelled event — delete matching iCloud item(s)
+				foreach (var ((icloudUid, recId), _) in iCloudDetailed.Where(e => e.Key.uid == uid))
 				{
-					string eventUrl_cancelled = $"{calendarUrl}{uid}.ics";
+					string eventUrl_cancelled = $"{calendarUrl}{icloudUid}.ics";
 					var request_cancelled = new HttpRequestMessage(HttpMethod.Delete, eventUrl_cancelled);
 					var response_cancelled = await client.SendAsync(request_cancelled);
 					if (response_cancelled.IsSuccessStatusCode)
-						_logger.LogInformation("Deleted cancelled event UID {Uid} from iCloud", uid);
+						_logger.LogInformation("Deleted cancelled event UID {Uid} RecurrenceID [{RecurrenceId}]", uid, recId);
 					else
-						_logger.LogWarning("Failed to delete cancelled event UID {Uid}: {Status} - {Reason}", uid, response_cancelled.StatusCode, response_cancelled.ReasonPhrase);
+						_logger.LogWarning("Failed to delete cancelled event UID {Uid} RecurrenceID [{RecurrenceId}]: {Status} - {Reason}", uid, recId, response_cancelled.StatusCode, response_cancelled.ReasonPhrase);
 				}
 				continue;
 			}
-
 
 			var calEvent = CreateCalendarEvent(appt, uid);
 			var calendar = new Calendar { Events = { calEvent } };
 			var serializer = new CalendarSerializer();
 			string newIcs = serializer.SerializeToString(calendar);
+			string recurrenceKey = calEvent.RecurrenceId != null ? calEvent.RecurrenceId.ToString("o") : "";
 
-			string eventUrl = $"{calendarUrl}{uid}.ics";
+			bool needsUpdate = true;
 
-			if (iCloudEvents.ContainsKey(uid))
+			if (iCloudDetailed.TryGetValue((uid, recurrenceKey), out var existingEvent))
 			{
-				var existingResponse = await client.GetAsync(eventUrl);
-				if (!existingResponse.IsSuccessStatusCode)
-					continue;
-
-				var existingContent = await existingResponse.Content.ReadAsStringAsync();
-				var existingCal = Calendar.Load(existingContent);
-				var existingEvent = existingCal.Events.FirstOrDefault();
-				if (existingEvent != null)
-				{
-					bool needsUpdate =
-						existingEvent.Summary != calEvent.Summary ||
-						existingEvent.Start != calEvent.Start ||
-						existingEvent.End != calEvent.End ||
-						existingEvent.Description != calEvent.Description ||
-						existingEvent.Location != calEvent.Location;
-
-					if (!needsUpdate)
-					{
-						_logger.LogDebug("No changes detected for UID {Uid}. Skipping update.", uid);
-						continue;
-					}
-				}
+				needsUpdate =
+					existingEvent.Summary != calEvent.Summary ||
+					existingEvent.Start != calEvent.Start ||
+					existingEvent.End != calEvent.End ||
+					existingEvent.Description != calEvent.Description ||
+					existingEvent.Location != calEvent.Location;
 			}
 
-			var request = new HttpRequestMessage(HttpMethod.Put, eventUrl)
+			if (!needsUpdate)
+			{
+				_logger.LogDebug("No changes detected for UID {Uid} RecurrenceID [{RecurrenceId}]. Skipping update.", uid, recurrenceKey);
+				continue;
+			}
+
+			string eventUrl = $"{calendarUrl}{uid}.ics";
+			var requestPut = new HttpRequestMessage(HttpMethod.Put, eventUrl)
 			{
 				Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
 			};
 
-			var response = await client.SendAsync(request);
-			if (response.IsSuccessStatusCode)
+			var responsePut = await client.SendAsync(requestPut);
+			if (responsePut.IsSuccessStatusCode)
 			{
-				_logger.LogInformation("Synced event '{Subject}' with UID {Uid}", appt.Subject, uid);
+				_logger.LogInformation("Synced event '{Subject}' UID {Uid} RecurrenceID [{RecurrenceId}]", appt.Subject, uid, recurrenceKey);
 			}
 			else
 			{
-				_logger.LogWarning("Failed to sync event '{Subject}' with UID {Uid}: {Status} - {Reason}", appt.Subject, uid, response.StatusCode, response.ReasonPhrase);
-				await RetryRequestAsync(client, request);
+				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}", appt.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
+				await RetryRequestAsync(client, requestPut);
 			}
 		}
 
-		// Delete iCloud events not in Outlook
-		foreach (var iCloudUid in iCloudEvents.Keys)
+		// Delete iCloud events not present in Outlook
+		foreach (var ((uid, recId), _) in iCloudDetailed)
 		{
-			if (!outlookEvents.ContainsKey(iCloudUid))
+			if (!outlookEvents.ContainsKey(uid))
 			{
-				string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
+				string eventUrl = $"{calendarUrl}{uid}.ics";
 				var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-
 				var response = await client.SendAsync(request);
+
 				if (response.IsSuccessStatusCode)
-				{
-					_logger.LogInformation("Deleted iCloud event with UID {Uid}", iCloudUid);
-				}
+					_logger.LogInformation("Deleted orphaned iCloud event UID {Uid}", uid);
 				else
-				{
-					_logger.LogWarning("Failed to delete iCloud event with UID {Uid}: {Status} - {Reason}", iCloudUid, response.StatusCode, response.ReasonPhrase);
-				}
+					_logger.LogWarning("Failed to delete orphaned iCloud event UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
 			}
 		}
 
+		// Cleanup broken recurrence exceptions
 		foreach (var uid in orphanedUids)
 		{
 			string eventUrl = $"{calendarUrl}{uid}.ics";
@@ -400,8 +389,8 @@ public class CalendarSyncService : BackgroundService
 			else
 				_logger.LogWarning("Failed to delete broken exception UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
 		}
-
 	}
+
 
 	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl)
 	{
@@ -465,6 +454,24 @@ public class CalendarSyncService : BackgroundService
 			Description = appt.Body ?? ""
 		};
 
+		// Mark recurrence exception (override)
+		if (appt.IsRecurring)
+		{
+			try
+			{
+				var pattern = appt.GetRecurrencePattern();
+				if (pattern != null && appt.Start != pattern.PatternStartDate)
+				{
+					calEvent.RecurrenceId = new CalDateTime(appt.Start.ToUniversalTime());
+				}
+			}
+			catch (COMException ex)
+			{
+				_logger.LogDebug(ex, "Could not determine if item is a recurrence exception.");
+			}
+		}
+
+		// Add recurrence rule for master events
 		if (appt.IsRecurring)
 		{
 			Outlook.RecurrencePattern pattern = null;
@@ -534,7 +541,7 @@ public class CalendarSyncService : BackgroundService
 			}
 		}
 
-		// Add 10-minute and 3-minute reminders
+		// Add reminders
 		var reminder = new Alarm
 		{
 			Action = AlarmAction.Display,
