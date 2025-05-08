@@ -136,10 +136,9 @@ public class CalendarSyncService : BackgroundService
 
 				try
 				{
-					if (item is Outlook.AppointmentItem appt &&
-						appt.Start < end && appt.End > start)
+					if (item is Outlook.AppointmentItem appt)
 					{
-						allItems.Add(appt);
+						allItems.Add(appt); 
 					}
 				}
 				catch (Exception ex)
@@ -152,7 +151,7 @@ public class CalendarSyncService : BackgroundService
 
 			var outlookEvents = GetOutlookEventsFromList(allItems);
 
-			_logger.LogInformation("Found {Count} Outlook events to sync.", outlookEvents.Count);
+			_logger.LogInformation("Expanded to {Count} atomic Outlook events.", outlookEvents.Count);
 
 			using var client = CreateHttpClient();
 			string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
@@ -216,88 +215,68 @@ public class CalendarSyncService : BackgroundService
 	private Dictionary<string, Outlook.AppointmentItem> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
 	{
 		var events = new Dictionary<string, Outlook.AppointmentItem>();
+		DateTime syncStart = DateTime.Today.AddDays(-30);
+		DateTime syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
 		foreach (var appt in appts)
 		{
-			string uid;
+			if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+				continue;
+
+			if (!appt.IsRecurring)
+			{
+				string uid = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+				_logger.LogDebug("Adding single event UID: {Uid} Start: {Start}", uid, appt.Start);
+				events[uid] = appt;
+				continue;
+			}
+
+			Outlook.RecurrencePattern pattern = null;
 			try
 			{
-				uid = appt.EntryID ?? Guid.NewGuid().ToString();
+				pattern = appt.GetRecurrencePattern();
 			}
 			catch (COMException ex)
 			{
-				_logger.LogDebug(ex, "Failed to access EntryID for an Outlook appointment. Skipping item.");
+				_logger.LogDebug(ex, "Failed to get recurrence pattern for recurring appointment. Skipping.");
 				continue;
 			}
 
-			if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
-			{
-				_logger.LogInformation("Detected cancelled event: {Subject} (UID {Uid})", appt.Subject, uid);
-				events[uid] = null;
+			if (pattern == null)
 				continue;
-			}
 
-			events[uid] = appt;
+			DateTime instanceTime = syncStart;
+			int instanceLimit = 1000;
+			int instanceCount = 0;
 
-			if (appt.IsRecurring)
+			while (instanceTime < syncEnd && instanceCount++ < instanceLimit)
 			{
-				Outlook.RecurrencePattern pattern = null;
+				_logger.LogDebug("Checking recurrence on {Date}", instanceTime);
+
+				Outlook.AppointmentItem instance = null;
 				try
 				{
-					pattern = appt.GetRecurrencePattern();
+					instance = pattern.GetOccurrence(instanceTime);
 				}
-				catch (COMException ex)
+				catch
 				{
-					_logger.LogDebug(ex, "Failed to get recurrence pattern. Skipping recurrence details.");
+					instanceTime = instanceTime.AddDays(1);
+					continue;
 				}
 
-				if (pattern != null)
+				if (instance != null &&
+					instance.Start < syncEnd && instance.End > syncStart &&
+					instance.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled)
 				{
-					int exceptionCount = 0;
-					foreach (Outlook.Exception ex in pattern.Exceptions)
-					{
-						if (exceptionCount++ > 100)
-						{
-							_logger.LogWarning("Exceeded 100 recurrence exceptions — aborting loop to avoid hang.");
-							break;
-						}
-
-						try
-						{
-							var exAppt = ex.AppointmentItem;
-							if (exAppt != null)
-							{
-								string exUid;
-								try
-								{
-									exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
-								}
-								catch (COMException innerEx)
-								{
-									_logger.LogDebug(innerEx, "Failed to access EntryID for a recurrence exception. Skipping.");
-									continue;
-								}
-
-								if (exAppt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
-								{
-									_logger.LogInformation("Detected cancelled recurrence exception UID {Uid}", exUid);
-									events[exUid] = null;
-								}
-								else
-								{
-									events[exUid] = exAppt;
-								}
-							}
-						}
-						catch (COMException comEx)
-						{
-							_logger.LogDebug(comEx, "Skipped broken recurrence exception.");
-							_brokenExceptionDates.Add(ex.OriginalDate);
-						}
-					}
-					Marshal.ReleaseComObject(pattern);
+					string instanceUid = $"outlook-{appt.GlobalAppointmentID}-{instance.Start:yyyyMMddTHHmmss}";
+					_logger.LogDebug("Adding instance UID: {Uid} Start: {Start}", instanceUid, instance.Start);
+					events[instanceUid] = instance;
 				}
+
+				instanceTime = instanceTime.AddDays(1);
 			}
+
+			Marshal.ReleaseComObject(pattern);
 		}
 
 		return events;
@@ -305,77 +284,36 @@ public class CalendarSyncService : BackgroundService
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, Outlook.AppointmentItem> outlookEvents)
 	{
 		string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
+		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl); // UID -> etag (unused)
 
-		var iCloudDetailed = new Dictionary<(string uid, string recurrenceId), CalendarEvent>();
-		var orphanedUids = new HashSet<string>();
-
-		// Expand existing iCloud events and map them by UID + optional recurrence-id
-		foreach (var iCloudUid in iCloudEvents.Keys)
-		{
-			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
-			var response = await client.GetAsync(eventUrl);
-			if (!response.IsSuccessStatusCode)
-				continue;
-
-			var content = await response.Content.ReadAsStringAsync();
-			var calendar = Calendar.Load(content);
-			var ev = calendar.Events.FirstOrDefault();
-			if (ev == null)
-				continue;
-
-			string recurrenceKey = ev.RecurrenceId != null ? ev.RecurrenceId.ToString("o") : "";
-			iCloudDetailed[(iCloudUid, recurrenceKey)] = ev;
-
-			if (_brokenExceptionDates.Contains(ev.Start.Value.ToLocalTime().Date))
-				orphanedUids.Add(iCloudUid);
-		}
-
-		_logger.LogInformation("Expanded iCloud calendar to {Count} detailed events (including overrides).", iCloudDetailed.Count);
+		_logger.LogInformation("Found {Count} iCloud events before sync.", iCloudEvents.Count);
 
 		foreach (var (uid, appt) in outlookEvents)
 		{
 			if (appt == null)
-			{
-				// Cancelled event — delete matching iCloud item(s)
-				foreach (var ((icloudUid, recId), _) in iCloudDetailed.Where(e => e.Key.uid == uid))
-				{
-					string eventUrl_cancelled = $"{calendarUrl}{icloudUid}.ics";
-					var request_cancelled = new HttpRequestMessage(HttpMethod.Delete, eventUrl_cancelled);
-					var response_cancelled = await client.SendAsync(request_cancelled);
-					if (response_cancelled.IsSuccessStatusCode)
-						_logger.LogInformation("Deleted cancelled event UID {Uid} RecurrenceID [{RecurrenceId}]", uid, recId);
-					else
-						_logger.LogWarning("Failed to delete cancelled event UID {Uid} RecurrenceID [{RecurrenceId}]: {Status} - {Reason}", uid, recId, response_cancelled.StatusCode, response_cancelled.ReasonPhrase);
-				}
 				continue;
-			}
 
 			var calEvent = CreateCalendarEvent(appt, uid);
 			var calendar = new Calendar { Events = { calEvent } };
 			var serializer = new CalendarSerializer();
 			string newIcs = serializer.SerializeToString(calendar);
-			string recurrenceKey = calEvent.RecurrenceId != null ? calEvent.RecurrenceId.ToString("o") : "";
+
+			string eventUrl = $"{calendarUrl}{uid}.ics";
 
 			bool needsUpdate = true;
 
-			if (iCloudDetailed.TryGetValue((uid, recurrenceKey), out var existingEvent))
+			if (iCloudEvents.ContainsKey(uid))
 			{
-				needsUpdate =
-					existingEvent.Summary != calEvent.Summary ||
-					existingEvent.Start != calEvent.Start ||
-					existingEvent.End != calEvent.End ||
-					existingEvent.Description != calEvent.Description ||
-					existingEvent.Location != calEvent.Location;
+				// No actual diffing here; always replace if exists (safe fallback in flat mode)
+				needsUpdate = true;
 			}
 
 			if (!needsUpdate)
 			{
-				_logger.LogDebug("No changes detected for UID {Uid} RecurrenceID [{RecurrenceId}]. Skipping update.", uid, recurrenceKey);
+				_logger.LogDebug("Skipping unchanged event UID {Uid}", uid);
 				continue;
 			}
 
-			string eventUrl = $"{calendarUrl}{uid}.ics";
 			var requestPut = new HttpRequestMessage(HttpMethod.Put, eventUrl)
 			{
 				Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
@@ -384,7 +322,7 @@ public class CalendarSyncService : BackgroundService
 			var responsePut = await client.SendAsync(requestPut);
 			if (responsePut.IsSuccessStatusCode)
 			{
-				_logger.LogInformation("Synced event '{Subject}' UID {Uid} RecurrenceID [{RecurrenceId}]", appt.Subject, uid, recurrenceKey);
+				_logger.LogInformation("Synced event '{Subject}' UID {Uid}", appt.Subject, uid);
 			}
 			else
 			{
@@ -393,8 +331,8 @@ public class CalendarSyncService : BackgroundService
 			}
 		}
 
-		// Delete iCloud events not present in Outlook
-		foreach (var ((uid, recId), _) in iCloudDetailed)
+		// Cleanup orphaned iCloud events not present in Outlook
+		foreach (var uid in iCloudEvents.Keys)
 		{
 			if (!outlookEvents.ContainsKey(uid))
 			{
@@ -407,19 +345,6 @@ public class CalendarSyncService : BackgroundService
 				else
 					_logger.LogWarning("Failed to delete orphaned iCloud event UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
 			}
-		}
-
-		// Cleanup broken recurrence exceptions
-		foreach (var uid in orphanedUids)
-		{
-			string eventUrl = $"{calendarUrl}{uid}.ics";
-			var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-			var response = await client.SendAsync(request);
-
-			if (response.IsSuccessStatusCode)
-				_logger.LogInformation("Deleted broken exception event UID {Uid}", uid);
-			else
-				_logger.LogWarning("Failed to delete broken exception UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
 		}
 	}
 
@@ -486,92 +411,7 @@ public class CalendarSyncService : BackgroundService
 			Description = appt.Body ?? ""
 		};
 
-		// Mark recurrence exception (override)
-		if (appt.IsRecurring)
-		{
-			try
-			{
-				var pattern = appt.GetRecurrencePattern();
-				if (pattern != null && appt.Start != pattern.PatternStartDate)
-				{
-					calEvent.RecurrenceId = new CalDateTime(appt.Start.ToUniversalTime());
-				}
-			}
-			catch (COMException ex)
-			{
-				_logger.LogDebug(ex, "Could not determine if item is a recurrence exception.");
-			}
-		}
-
-		// Add recurrence rule for master events
-		if (appt.IsRecurring)
-		{
-			Outlook.RecurrencePattern pattern = null;
-			try
-			{
-				pattern = appt.GetRecurrencePattern();
-			}
-			catch (COMException ex)
-			{
-				_logger.LogDebug(ex, "Failed to get recurrence pattern. Skipping recurrence rule.");
-			}
-
-			if (pattern != null)
-			{
-				try
-				{
-					var recurrenceRule = new RecurrencePattern
-					{
-						Frequency = pattern.RecurrenceType switch
-						{
-							Outlook.OlRecurrenceType.olRecursDaily => FrequencyType.Daily,
-							Outlook.OlRecurrenceType.olRecursWeekly => FrequencyType.Weekly,
-							Outlook.OlRecurrenceType.olRecursMonthly => FrequencyType.Monthly,
-							Outlook.OlRecurrenceType.olRecursYearly => FrequencyType.Yearly,
-							_ => FrequencyType.None
-						},
-						Interval = pattern.Interval
-					};
-
-					if (pattern.RecurrenceType == Outlook.OlRecurrenceType.olRecursWeekly)
-					{
-						var daysOfWeek = new List<WeekDay>();
-						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olMonday) != 0)
-							daysOfWeek.Add(new WeekDay(DayOfWeek.Monday));
-						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olTuesday) != 0)
-							daysOfWeek.Add(new WeekDay(DayOfWeek.Tuesday));
-						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olWednesday) != 0)
-							daysOfWeek.Add(new WeekDay(DayOfWeek.Wednesday));
-						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olThursday) != 0)
-							daysOfWeek.Add(new WeekDay(DayOfWeek.Thursday));
-						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olFriday) != 0)
-							daysOfWeek.Add(new WeekDay(DayOfWeek.Friday));
-						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olSaturday) != 0)
-							daysOfWeek.Add(new WeekDay(DayOfWeek.Saturday));
-						if ((pattern.DayOfWeekMask & Outlook.OlDaysOfWeek.olSunday) != 0)
-							daysOfWeek.Add(new WeekDay(DayOfWeek.Sunday));
-						recurrenceRule.ByDay = daysOfWeek;
-					}
-
-					if (pattern.NoEndDate)
-						recurrenceRule.Count = null;
-					else if (pattern.Occurrences > 0)
-						recurrenceRule.Count = pattern.Occurrences;
-					else if (pattern.PatternEndDate != DateTime.MinValue)
-						recurrenceRule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
-
-					calEvent.RecurrenceRules.Add(recurrenceRule);
-				}
-				catch (COMException ex)
-				{
-					_logger.LogDebug(ex, "Failed to extract recurrence details from pattern. Skipping recurrence.");
-				}
-				finally
-				{
-					Marshal.ReleaseComObject(pattern);
-				}
-			}
-		}
+		// No RRULE or RECURRENCE-ID added — all events are atomic
 
 		// Add reminders
 		var reminder = new Alarm
