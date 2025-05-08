@@ -119,9 +119,9 @@ public class CalendarSyncService : BackgroundService
 		{
 			items.IncludeRecurrences = false;
 			items.Sort("[Start]");
-			DateTime start = DateTime.Today;
-			DateTime end = start.AddDays(_config.SyncDaysIntoFuture);
-			string filter = $"[Start] >= '{start:g}' AND [Start] <= '{end:g}' OR [End] >= '{start:g}' AND [End] <= '{end:g}'";
+			DateTime start = DateTime.Today.AddDays(-30);
+			DateTime end = DateTime.Today.AddDays(30);
+			string filter = $"([Start] >= '{start:g}' AND [Start] <= '{end:g}') OR ([End] >= '{start:g}' AND [End] <= '{end:g}')";
 			var restrictedItems = items.Restrict(filter);
 			var outlookEvents = GetOutlookEvents(restrictedItems);
 			_logger.LogInformation("Found {Count} Outlook events to sync.", outlookEvents.Count);
@@ -153,44 +153,21 @@ public class CalendarSyncService : BackgroundService
 
 	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl)
 	{
-		_logger.LogInformation("Wiping iCloud calendar from today onward.");
+		_logger.LogInformation("Wiping entire iCloud calendar (past and future events).");
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
-		_logger.LogInformation("Found {Count} existing iCloud events to evaluate.", iCloudEvents.Count);
+		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
 
 		foreach (var iCloudUid in iCloudEvents.Keys)
 		{
 			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
-			var response = await client.GetAsync(eventUrl);
-			if (!response.IsSuccessStatusCode)
-			{
-				_logger.LogWarning("Failed to fetch iCloud event UID {Uid} for evaluation: {Status}", iCloudUid, response.StatusCode);
-				continue;
-			}
-
-			var content = await response.Content.ReadAsStringAsync();
-			var calendar = Calendar.Load(content);
-			var ev = calendar.Events.FirstOrDefault();
-			if (ev == null)
-			{
-				_logger.LogDebug("Skipping deletion, no event found for UID {Uid}", iCloudUid);
-				continue;
-			}
-
-			var end = ev.RecurrenceRules?.FirstOrDefault()?.Until ?? ev.End?.Value;
-			if (end == null || end.Value.Date < DateTime.Today)
-			{
-				_logger.LogDebug("Skipping deletion, event UID {Uid} ends in past", iCloudUid);
-				continue;
-			}
-
 			var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-			await Task.Delay(250);
+			await Task.Delay(250); // light rate limiting
 			try
 			{
 				var deleteResponse = await client.SendAsync(deleteRequest);
 				if (deleteResponse.IsSuccessStatusCode)
 				{
-					_logger.LogInformation("Deleted future iCloud event with UID {Uid}", iCloudUid);
+					_logger.LogInformation("Deleted iCloud event with UID {Uid}", iCloudUid);
 				}
 				else
 				{
@@ -200,10 +177,12 @@ public class CalendarSyncService : BackgroundService
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Exception while deleting iCloud event UID {Uid}", iCloudUid);
+				await Task.Delay(5000);
 			}
 		}
 
-		_logger.LogInformation("Finished selective iCloud calendar wipe.");
+		_logger.LogInformation("Finished full iCloud calendar wipe. Waiting 2 minutes for cache to clear.");
+		await Task.Delay(TimeSpan.FromMinutes(2));
 	}
 
 	private Dictionary<string, Outlook.AppointmentItem> GetOutlookEvents(Outlook.Items items)
@@ -215,10 +194,6 @@ public class CalendarSyncService : BackgroundService
 		{
 			if (item is Outlook.AppointmentItem appt)
 			{
-				// Skip cancelled meetings
-				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
-					continue;
-
 				string uid;
 				try
 				{
@@ -227,6 +202,13 @@ public class CalendarSyncService : BackgroundService
 				catch (COMException ex)
 				{
 					_logger.LogDebug(ex, "Failed to access EntryID for an Outlook appointment. Skipping item.");
+					continue;
+				}
+
+				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+				{
+					_logger.LogInformation("Detected cancelled event: {Subject} (UID {Uid})", appt.Subject, uid);
+					events[uid] = null; // mark for deletion
 					continue;
 				}
 
@@ -251,7 +233,7 @@ public class CalendarSyncService : BackgroundService
 							try
 							{
 								var exAppt = ex.AppointmentItem;
-								if (exAppt != null && exAppt.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled)
+								if (exAppt != null)
 								{
 									string exUid;
 									try
@@ -263,7 +245,15 @@ public class CalendarSyncService : BackgroundService
 										_logger.LogDebug(innerEx, "Failed to access EntryID for a recurrence exception. Skipping exception.");
 										continue;
 									}
-									events[exUid] = exAppt;
+									if (exAppt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+									{
+										_logger.LogInformation("Detected cancelled recurrence exception UID {Uid}", exUid);
+										events[exUid] = null; // mark cancelled recurrence for deletion
+									}
+									else
+									{
+										events[exUid] = exAppt;
+									}
 								}
 							}
 							catch (COMException comEx)
@@ -312,15 +302,59 @@ public class CalendarSyncService : BackgroundService
 		// Process Outlook events (create/update)
 		foreach (var (uid, appt) in outlookEvents)
 		{
+			if (appt == null)
+			{
+				// Cancelled event: delete from iCloud if it exists
+				if (iCloudEvents.ContainsKey(uid))
+				{
+					string eventUrl_cancelled = $"{calendarUrl}{uid}.ics";
+					var request_cancelled = new HttpRequestMessage(HttpMethod.Delete, eventUrl_cancelled);
+					var response_cancelled = await client.SendAsync(request_cancelled);
+					if (response_cancelled.IsSuccessStatusCode)
+						_logger.LogInformation("Deleted cancelled event UID {Uid} from iCloud", uid);
+					else
+						_logger.LogWarning("Failed to delete cancelled event UID {Uid}: {Status} - {Reason}", uid, response_cancelled.StatusCode, response_cancelled.ReasonPhrase);
+				}
+				continue;
+			}
+
+
 			var calEvent = CreateCalendarEvent(appt, uid);
 			var calendar = new Calendar { Events = { calEvent } };
 			var serializer = new CalendarSerializer();
-			string icsContent = serializer.SerializeToString(calendar);
+			string newIcs = serializer.SerializeToString(calendar);
 
 			string eventUrl = $"{calendarUrl}{uid}.ics";
+
+			if (iCloudEvents.ContainsKey(uid))
+			{
+				var existingResponse = await client.GetAsync(eventUrl);
+				if (!existingResponse.IsSuccessStatusCode)
+					continue;
+
+				var existingContent = await existingResponse.Content.ReadAsStringAsync();
+				var existingCal = Calendar.Load(existingContent);
+				var existingEvent = existingCal.Events.FirstOrDefault();
+				if (existingEvent != null)
+				{
+					bool needsUpdate =
+						existingEvent.Summary != calEvent.Summary ||
+						existingEvent.Start != calEvent.Start ||
+						existingEvent.End != calEvent.End ||
+						existingEvent.Description != calEvent.Description ||
+						existingEvent.Location != calEvent.Location;
+
+					if (!needsUpdate)
+					{
+						_logger.LogDebug("No changes detected for UID {Uid}. Skipping update.", uid);
+						continue;
+					}
+				}
+			}
+
 			var request = new HttpRequestMessage(HttpMethod.Put, eventUrl)
 			{
-				Content = new StringContent(icsContent, Encoding.UTF8, "text/calendar")
+				Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
 			};
 
 			var response = await client.SendAsync(request);
