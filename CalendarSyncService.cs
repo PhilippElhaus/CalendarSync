@@ -117,13 +117,30 @@ public class CalendarSyncService : BackgroundService
 
 		try
 		{
-			items.IncludeRecurrences = false;
+			items.IncludeRecurrences = true;
 			items.Sort("[Start]");
+
 			DateTime start = DateTime.Today.AddDays(-30);
 			DateTime end = DateTime.Today.AddDays(30);
-			string filter = $"([Start] >= '{start:g}' AND [Start] <= '{end:g}') OR ([End] >= '{start:g}' AND [End] <= '{end:g}')";
-			var restrictedItems = items.Restrict(filter);
-			var outlookEvents = GetOutlookEvents(restrictedItems);
+
+			var allItems = items.Cast<object>().OfType<Outlook.AppointmentItem>()
+				.Where(appt =>
+				{
+					try
+					{
+						return appt.Start < end && appt.End > start;
+					}
+					catch
+					{
+						return false; // safely ignore corrupt items
+					}
+				})
+				.ToList();
+
+			_logger.LogInformation("Collected {Count} Outlook items after manual date filter.", allItems.Count);
+
+			var outlookEvents = GetOutlookEventsFromList(allItems); 
+
 			_logger.LogInformation("Found {Count} Outlook events to sync.", outlookEvents.Count);
 
 			using var client = CreateHttpClient();
@@ -185,91 +202,88 @@ public class CalendarSyncService : BackgroundService
 		await Task.Delay(TimeSpan.FromMinutes(2));
 	}
 
-	private Dictionary<string, Outlook.AppointmentItem> GetOutlookEvents(Outlook.Items items)
+	private Dictionary<string, Outlook.AppointmentItem> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
 	{
 		var events = new Dictionary<string, Outlook.AppointmentItem>();
 
-		items.IncludeRecurrences = true;
-		foreach (object item in items)
+		foreach (var appt in appts)
 		{
-			if (item is Outlook.AppointmentItem appt)
+			string uid;
+			try
 			{
-				string uid;
+				uid = appt.EntryID ?? Guid.NewGuid().ToString();
+			}
+			catch (COMException ex)
+			{
+				_logger.LogDebug(ex, "Failed to access EntryID for an Outlook appointment. Skipping item.");
+				continue;
+			}
+
+			if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+			{
+				_logger.LogInformation("Detected cancelled event: {Subject} (UID {Uid})", appt.Subject, uid);
+				events[uid] = null;
+				continue;
+			}
+
+			events[uid] = appt;
+
+			if (appt.IsRecurring)
+			{
+				Outlook.RecurrencePattern pattern = null;
 				try
 				{
-					uid = appt.EntryID ?? Guid.NewGuid().ToString();
+					pattern = appt.GetRecurrencePattern();
 				}
 				catch (COMException ex)
 				{
-					_logger.LogDebug(ex, "Failed to access EntryID for an Outlook appointment. Skipping item.");
-					continue;
+					_logger.LogDebug(ex, "Failed to get recurrence pattern. Skipping recurrence details.");
 				}
 
-				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+				if (pattern != null)
 				{
-					_logger.LogInformation("Detected cancelled event: {Subject} (UID {Uid})", appt.Subject, uid);
-					events[uid] = null; // mark for deletion
-					continue;
-				}
-
-				events[uid] = appt;
-
-				if (appt.IsRecurring)
-				{
-					Outlook.RecurrencePattern pattern = null;
-					try
+					foreach (Outlook.Exception ex in pattern.Exceptions)
 					{
-						pattern = appt.GetRecurrencePattern();
-					}
-					catch (COMException ex)
-					{
-						_logger.LogDebug(ex, "Failed to get recurrence pattern. Skipping recurrence details.");
-					}
-
-					if (pattern != null)
-					{
-						foreach (Outlook.Exception ex in pattern.Exceptions)
+						try
 						{
-							try
+							var exAppt = ex.AppointmentItem;
+							if (exAppt != null)
 							{
-								var exAppt = ex.AppointmentItem;
-								if (exAppt != null)
+								string exUid;
+								try
 								{
-									string exUid;
-									try
-									{
-										exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
-									}
-									catch (COMException innerEx)
-									{
-										_logger.LogDebug(innerEx, "Failed to access EntryID for a recurrence exception. Skipping exception.");
-										continue;
-									}
-									if (exAppt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
-									{
-										_logger.LogInformation("Detected cancelled recurrence exception UID {Uid}", exUid);
-										events[exUid] = null; // mark cancelled recurrence for deletion
-									}
-									else
-									{
-										events[exUid] = exAppt;
-									}
+									exUid = exAppt.EntryID ?? Guid.NewGuid().ToString();
+								}
+								catch (COMException innerEx)
+								{
+									_logger.LogDebug(innerEx, "Failed to access EntryID for a recurrence exception. Skipping exception.");
+									continue;
+								}
+
+								if (exAppt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+								{
+									_logger.LogInformation("Detected cancelled recurrence exception UID {Uid}", exUid);
+									events[exUid] = null;
+								}
+								else
+								{
+									events[exUid] = exAppt;
 								}
 							}
-							catch (COMException comEx)
-							{
-								_logger.LogDebug(comEx, "Skipped broken recurrence exception.");
-								_brokenExceptionDates.Add(ex.OriginalDate);
-							}
 						}
-						Marshal.ReleaseComObject(pattern);
+						catch (COMException comEx)
+						{
+							_logger.LogDebug(comEx, "Skipped broken recurrence exception.");
+							_brokenExceptionDates.Add(ex.OriginalDate);
+						}
 					}
+					Marshal.ReleaseComObject(pattern);
 				}
 			}
 		}
+
 		return events;
 	}
-
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, Outlook.AppointmentItem> outlookEvents)
 	{
 		string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
