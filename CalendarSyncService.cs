@@ -6,13 +6,25 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Xml;
 using System.Xml.Linq;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync;
 
+
+
 public class CalendarSyncService : BackgroundService
 {
+	private record OutlookEventDto(
+	string Subject,
+	string Body,
+	string Location,
+	DateTime Start,
+	DateTime End,
+	string GlobalId
+	);
+
 	private readonly SyncConfig _config;
 	private readonly ILogger<CalendarSyncService> _logger;
 	private static bool _isFirstRun = true;
@@ -123,12 +135,17 @@ public class CalendarSyncService : BackgroundService
 			DateTime start = DateTime.Today.AddDays(-30);
 			DateTime end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
+			string filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
+			items = items.Restrict(filter);
+
+			_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
+
 			var allItems = new List<Outlook.AppointmentItem>();
 			int count = 0;
 
 			foreach (object item in items)
 			{
-				if (count++ > 1000)
+				if (count++ > 5000)
 				{
 					_logger.LogWarning("Aborting calendar item scan after 1000 items to prevent hangs.");
 					break;
@@ -212,107 +229,71 @@ public class CalendarSyncService : BackgroundService
 		await Task.Delay(TimeSpan.FromMinutes(2));
 	}
 
-	private Dictionary<string, Outlook.AppointmentItem> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
+	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
 	{
-		var events = new Dictionary<string, Outlook.AppointmentItem>();
+		var events = new Dictionary<string, OutlookEventDto>();
+		var expandedRecurringIds = new HashSet<string>();
+
 		DateTime syncStart = DateTime.Today.AddDays(-30);
 		DateTime syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
 		foreach (var appt in appts)
 		{
-			if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
-				continue;
-
-			if (!appt.IsRecurring)
-			{
-				string uid = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
-				_logger.LogDebug("Adding single event UID: {Uid} Start: {Start}", uid, appt.Start);
-				events[uid] = appt;
-				continue;
-			}
-
-			Outlook.RecurrencePattern pattern = null;
 			try
 			{
-				pattern = appt.GetRecurrencePattern();
-			}
-			catch (COMException ex)
-			{
-				_logger.LogDebug(ex, "Failed to get recurrence pattern for recurring appointment. Skipping.");
-				continue;
-			}
+				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+					continue;
 
-			if (pattern == null)
-				continue;
-
-			DateTime instanceTime = syncStart;
-			int instanceLimit = 1000;
-			int instanceCount = 0;
-
-			while (instanceTime < syncEnd && instanceCount++ < instanceLimit)
-			{
-				_logger.LogDebug("Checking recurrence on {Date}", instanceTime);
-
-				Outlook.AppointmentItem instance = null;
-				try
+				if (appt.IsRecurring)
 				{
-					instance = pattern.GetOccurrence(instanceTime);
-				}
-				catch
-				{
-					instanceTime = instanceTime.AddDays(1);
+					string globalId = appt.GlobalAppointmentID;
+					if (expandedRecurringIds.Contains(globalId))
+						continue;
+
+					expandedRecurringIds.Add(globalId);
+
+					var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
+					_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
+
+					foreach (var (uid, start, end) in instances)
+					{
+						var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
+						events[uid] = dto;
+					}
 					continue;
 				}
 
-				if (instance != null &&
-					instance.Start < syncEnd && instance.End > syncStart &&
-					instance.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled)
-				{
-					string instanceUid = $"outlook-{appt.GlobalAppointmentID}-{instance.Start:yyyyMMddTHHmmss}";
-					_logger.LogDebug("Adding instance UID: {Uid} Start: {Start}", instanceUid, instance.Start);
-					events[instanceUid] = instance;
-				}
-
-				instanceTime = instanceTime.AddDays(1);
+				// Single non-recurring event
+				string uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
+				events[uid_] = dtoItem;
 			}
-
-			Marshal.ReleaseComObject(pattern);
+			catch (Exception ex)
+			{
+				_logger.LogWarning(ex, "Failed to process appointment.");
+			}
 		}
-
 		return events;
 	}
-	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, Outlook.AppointmentItem> outlookEvents)
+
+	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents)
 	{
 		string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl); // UID -> etag (unused)
 
 		_logger.LogInformation("Found {Count} iCloud events before sync.", iCloudEvents.Count);
 
-		foreach (var (uid, appt) in outlookEvents)
+		foreach (var (uid, dto) in outlookEvents)
 		{
-			if (appt == null)
+			if (dto == null)
 				continue;
 
-			var calEvent = CreateCalendarEvent(appt, uid);
+			var calEvent = CreateCalendarEvent(dto, uid);
 			var calendar = new Calendar { Events = { calEvent } };
 			var serializer = new CalendarSerializer();
 			string newIcs = serializer.SerializeToString(calendar);
 
 			string eventUrl = $"{calendarUrl}{uid}.ics";
-
-			bool needsUpdate = true;
-
-			if (iCloudEvents.ContainsKey(uid))
-			{
-				// No actual diffing here; always replace if exists (safe fallback in flat mode)
-				needsUpdate = true;
-			}
-
-			if (!needsUpdate)
-			{
-				_logger.LogDebug("Skipping unchanged event UID {Uid}", uid);
-				continue;
-			}
 
 			var requestPut = new HttpRequestMessage(HttpMethod.Put, eventUrl)
 			{
@@ -322,11 +303,12 @@ public class CalendarSyncService : BackgroundService
 			var responsePut = await client.SendAsync(requestPut);
 			if (responsePut.IsSuccessStatusCode)
 			{
-				_logger.LogInformation("Synced event '{Subject}' UID {Uid}", appt.Subject, uid);
+				_logger.LogInformation("Synced event '{Subject}'", dto.Subject);
 			}
 			else
 			{
-				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}", appt.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
+				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}",
+					dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
 				await RetryRequestAsync(client, requestPut);
 			}
 		}
@@ -399,7 +381,7 @@ public class CalendarSyncService : BackgroundService
 		return events;
 	}
 
-	private CalendarEvent CreateCalendarEvent(Outlook.AppointmentItem appt, string uid)
+	private CalendarEvent CreateCalendarEvent(OutlookEventDto appt, string uid)
 	{
 		var calEvent = new CalendarEvent
 		{
@@ -411,25 +393,9 @@ public class CalendarSyncService : BackgroundService
 			Description = appt.Body ?? ""
 		};
 
-		// No RRULE or RECURRENCE-ID added — all events are atomic
-
-		// Add reminders
-		var reminder = new Alarm
-		{
-			Action = AlarmAction.Display,
-			Description = "Reminder",
-			Trigger = new Trigger("-PT10M")
-		};
-
-		var secondReminder = new Alarm
-		{
-			Action = AlarmAction.Display,
-			Description = "Reminder",
-			Trigger = new Trigger("-PT3M")
-		};
-
-		calEvent.Alarms.Add(secondReminder);
-		calEvent.Alarms.Add(reminder);
+		// Reminders
+		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
+		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
 
 		return calEvent;
 	}
@@ -472,5 +438,113 @@ public class CalendarSyncService : BackgroundService
 			
 		}
 	}
-	
+
+	private List<(string uid, DateTime start, DateTime end)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
+	{
+		var results = new List<(string uid, DateTime start, DateTime end)>();
+
+		Outlook.RecurrencePattern pattern;
+		try
+		{
+			pattern = appt.GetRecurrencePattern();
+		}
+		catch (COMException ex)
+		{
+			_logger.LogDebug(ex, "Failed to get recurrence pattern.");
+			return results;
+		}
+
+		if (pattern == null)
+			return results;
+
+		// Handle unsupported recurrence types
+		FrequencyType freq = pattern.RecurrenceType switch
+		{
+			Outlook.OlRecurrenceType.olRecursDaily => FrequencyType.Daily,
+			Outlook.OlRecurrenceType.olRecursWeekly => FrequencyType.Weekly,
+			Outlook.OlRecurrenceType.olRecursMonthly => FrequencyType.Monthly,
+			Outlook.OlRecurrenceType.olRecursYearly => FrequencyType.Yearly,
+			_ => FrequencyType.None
+		};
+
+		if (freq == FrequencyType.None)
+		{
+			_logger.LogWarning("Unsupported recurrence type for event '{Subject}'. Skipping.", appt.Subject);
+			return results;
+		}
+
+		// Build recurrence rule
+		var rule = new RecurrencePattern
+		{
+			Frequency = freq,
+			Interval = pattern.Interval
+		};
+
+		if (freq == FrequencyType.Weekly)
+		{
+			var byDay = new List<WeekDay>();
+			var mask = pattern.DayOfWeekMask;
+
+			if ((mask & Outlook.OlDaysOfWeek.olMonday) != 0)
+				byDay.Add(new WeekDay(DayOfWeek.Monday));
+			if ((mask & Outlook.OlDaysOfWeek.olTuesday) != 0)
+				byDay.Add(new WeekDay(DayOfWeek.Tuesday));
+			if ((mask & Outlook.OlDaysOfWeek.olWednesday) != 0)
+				byDay.Add(new WeekDay(DayOfWeek.Wednesday));
+			if ((mask & Outlook.OlDaysOfWeek.olThursday) != 0)
+				byDay.Add(new WeekDay(DayOfWeek.Thursday));
+			if ((mask & Outlook.OlDaysOfWeek.olFriday) != 0)
+				byDay.Add(new WeekDay(DayOfWeek.Friday));
+			if ((mask & Outlook.OlDaysOfWeek.olSaturday) != 0)
+				byDay.Add(new WeekDay(DayOfWeek.Saturday));
+			if ((mask & Outlook.OlDaysOfWeek.olSunday) != 0)
+				byDay.Add(new WeekDay(DayOfWeek.Sunday));
+
+			rule.ByDay = byDay;
+		}
+
+		if (!pattern.NoEndDate)
+		{
+			if (pattern.Occurrences > 0)
+				rule.Count = pattern.Occurrences;
+			else if (pattern.PatternEndDate != DateTime.MinValue)
+				rule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
+		}
+		
+		var calEvent = new CalendarEvent
+		{			
+			Start = new CalDateTime(((DateTime)appt.Start).ToUniversalTime()),
+			End = new CalDateTime(((DateTime)appt.End).ToUniversalTime()),
+			RecurrenceRules = new List<RecurrencePattern> { rule }
+		};
+
+		// Collect exception dates to skip
+		var skipDates = new HashSet<DateTime>();
+		foreach (Outlook.Exception ex in pattern.Exceptions)
+		{
+			try
+			{
+				skipDates.Add(ex.OriginalDate.Date);
+			}
+			catch { /* skip broken exceptions */ }
+		}
+
+		// Evaluate occurrences
+		var occurrences = calEvent.GetOccurrences(from.ToUniversalTime(), to.ToUniversalTime());
+
+		foreach (var occ in occurrences)
+		{
+			var start = occ.Period.StartTime.Value.ToLocalTime();
+			if (skipDates.Contains(start.Date))
+				continue;
+
+			var end = start.Add((DateTime)appt.End - (DateTime)appt.Start);
+			string uid = $"outlook-{appt.GlobalAppointmentID}-{start:yyyyMMddTHHmmss}";
+			results.Add((uid, start, end));
+		}
+
+		return results;
+	}
+
+
 }
