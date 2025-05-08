@@ -81,10 +81,10 @@ public class CalendarSyncService : BackgroundService
 				_logger.LogInformation("Successfully connected to Outlook.");
 				connected = true;
 			}
-			catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005)) 
+			catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
 			{
 				retryCount++;
-				_logger.LogWarning(ex, $"Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {retryCount}/{maxRetries}.", retryCount, maxRetries);
+				_logger.LogWarning(ex, $"Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {retryCount}/{maxRetries}.");
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
 				if (retryCount == maxRetries)
 				{
@@ -121,25 +121,36 @@ public class CalendarSyncService : BackgroundService
 			items.Sort("[Start]");
 
 			DateTime start = DateTime.Today.AddDays(-30);
-			DateTime end = DateTime.Today.AddDays(30);
+			DateTime end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
-			var allItems = items.Cast<object>().OfType<Outlook.AppointmentItem>()
-				.Where(appt =>
+			var allItems = new List<Outlook.AppointmentItem>();
+			int count = 0;
+
+			foreach (object item in items)
+			{
+				if (count++ > 1000)
 				{
-					try
+					_logger.LogWarning("Aborting calendar item scan after 1000 items to prevent hangs.");
+					break;
+				}
+
+				try
+				{
+					if (item is Outlook.AppointmentItem appt &&
+						appt.Start < end && appt.End > start)
 					{
-						return appt.Start < end && appt.End > start;
+						allItems.Add(appt);
 					}
-					catch
-					{
-						return false; // safely ignore corrupt items
-					}
-				})
-				.ToList();
+				}
+				catch (Exception ex)
+				{
+					_logger.LogDebug(ex, "Skipping calendar item due to exception.");
+				}
+			}
 
 			_logger.LogInformation("Collected {Count} Outlook items after manual date filter.", allItems.Count);
 
-			var outlookEvents = GetOutlookEventsFromList(allItems); 
+			var outlookEvents = GetOutlookEventsFromList(allItems);
 
 			_logger.LogInformation("Found {Count} Outlook events to sync.", outlookEvents.Count);
 
@@ -178,7 +189,7 @@ public class CalendarSyncService : BackgroundService
 		{
 			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
 			var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-			await Task.Delay(250); // light rate limiting
+			await Task.Delay(500);
 			try
 			{
 				var deleteResponse = await client.SendAsync(deleteRequest);
@@ -242,8 +253,15 @@ public class CalendarSyncService : BackgroundService
 
 				if (pattern != null)
 				{
+					int exceptionCount = 0;
 					foreach (Outlook.Exception ex in pattern.Exceptions)
 					{
+						if (exceptionCount++ > 100)
+						{
+							_logger.LogWarning("Exceeded 100 recurrence exceptions — aborting loop to avoid hang.");
+							break;
+						}
+
 						try
 						{
 							var exAppt = ex.AppointmentItem;
@@ -256,7 +274,7 @@ public class CalendarSyncService : BackgroundService
 								}
 								catch (COMException innerEx)
 								{
-									_logger.LogDebug(innerEx, "Failed to access EntryID for a recurrence exception. Skipping exception.");
+									_logger.LogDebug(innerEx, "Failed to access EntryID for a recurrence exception. Skipping.");
 									continue;
 								}
 
