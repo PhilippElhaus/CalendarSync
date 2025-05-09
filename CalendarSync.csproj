@@ -2,6 +2,7 @@
 
   <PropertyGroup>
       <OutputType>WinExe</OutputType>
+	  <ApplicationIcon>cal64.ico</ApplicationIcon>
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -38,6 +39,9 @@
     <None Update="config.json">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
+	<None Update="cal64.ico">
+	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	</None>
   </ItemGroup>
 
 </Project>

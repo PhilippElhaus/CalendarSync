@@ -6,14 +6,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Xml;
 using System.Xml.Linq;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync;
-
-
-
 public class CalendarSyncService : BackgroundService
 {
 	private record OutlookEventDto(
@@ -31,7 +27,6 @@ public class CalendarSyncService : BackgroundService
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
 	private readonly HashSet<DateTime> _brokenExceptionDates = new();
-
 
 	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger)
 	{
@@ -132,7 +127,7 @@ public class CalendarSyncService : BackgroundService
 			items.IncludeRecurrences = true;
 			items.Sort("[Start]");
 
-			DateTime start = DateTime.Today.AddDays(-30);
+			DateTime start = DateTime.Today.AddDays(-(_config.SyncDaysIntoPast));
 			DateTime end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
 			string filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
@@ -330,7 +325,6 @@ public class CalendarSyncService : BackgroundService
 		}
 	}
 
-
 	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl)
 	{
 		var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), calendarUrl)
@@ -416,26 +410,6 @@ public class CalendarSyncService : BackgroundService
 		if (!retryResponse.IsSuccessStatusCode)
 		{
 			_logger.LogError("Retry failed for {Method} {Url}: {Status} - {Reason}", request.Method, request.RequestUri, retryResponse.StatusCode, retryResponse.ReasonPhrase);
-		}
-	}
-
-	private void CleanupOutlook(Outlook.Application app, Outlook.NameSpace ns, Outlook.MAPIFolder folder, Outlook.Items items)
-	{
-		try
-		{
-			if (items != null)
-				Marshal.ReleaseComObject(items);
-			if (folder != null)
-				Marshal.ReleaseComObject(folder);
-			if (ns != null)
-				Marshal.ReleaseComObject(ns);
-			if (app != null)
-				Marshal.ReleaseComObject(app);
-		}
-		catch 
-		{
-			_logger.LogError("Unable to clean up Outlook COM objects.");
-			
 		}
 	}
 
@@ -545,6 +519,25 @@ public class CalendarSyncService : BackgroundService
 
 		return results;
 	}
+	
+	private void CleanupOutlook(Outlook.Application app, Outlook.NameSpace ns, Outlook.MAPIFolder folder, Outlook.Items items)
+	{
+		try
+		{
+			if (items != null)
+				Marshal.ReleaseComObject(items);
+			if (folder != null)
+				Marshal.ReleaseComObject(folder);
+			if (ns != null)
+				Marshal.ReleaseComObject(ns);
+			if (app != null)
+				Marshal.ReleaseComObject(app);
+		}
+		catch
+		{
+			_logger.LogError("Unable to clean up Outlook COM objects.");
 
+		}
+	}
 
 }

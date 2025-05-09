@@ -45,7 +45,7 @@ namespace CalendarSync
 							rollOnFileSizeLimit: true,
 							fileSizeLimitBytes: 1_048_576,
 							rollingInterval: RollingInterval.Infinite,
-							retainedFileCountLimit: 1, // keep only 1 backup: sync.log.bak
+							retainedFileCountLimit: 1, 
 							shared: true
 							)
 						.CreateLogger();
@@ -65,6 +65,7 @@ namespace CalendarSync
 		public int InitialWaitSeconds { get; set; } = 60;
 		public int SyncIntervalMinutes { get; set; } = 3;
 		public int SyncDaysIntoFuture { get; set; } = 30;
+		public int SyncDaysIntoPast { get; set; } = 30;
 
 	}
 }
