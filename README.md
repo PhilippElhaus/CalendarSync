@@ -40,11 +40,11 @@ C:\CalendarSync\
     "ICloudPassword": "app-specific-password",
     "PrincipalId": "XXXXXXXXX",
     "WorkCalendarId": "YYYYYYYYY",
-	"InitialWaitSeconds": 60,
-	"SyncIntervalMinutes": 3,
-	"SyncDaysIntoFuture": 30,
+    "InitialWaitSeconds": 60,
+    "SyncIntervalMinutes": 3,
+    "SyncDaysIntoFuture": 30,
     "SyncDaysIntoPast": 30,
-	"LogLevel": "Information"
+    "LogLevel": "Information"
 }
 ```
 
