@@ -4,7 +4,7 @@
 # CalendarSync
 
 **CalendarSync** is a lightweight .NET-based background application that performs a **one-way sync from Microsoft Outlook to Apple iCloud Calendar** using CalDAV. 
-As a COM-Interop application it is optimized to run silently as a Scheduled Task on Windows systems, without relying on Microsoft Graph or full Exchange integration.
+As a COM-Interop application it is optimized to run silently via a Scheduled Task on Windows systems - without relying on Microsoft Graph or full Exchange integration.
 
 ## Features
 
@@ -39,7 +39,12 @@ C:\CalendarSync\
     "ICloudUser": "your_apple_id@icloud.com",
     "ICloudPassword": "app-specific-password",
     "PrincipalId": "XXXXXXXXX",
-    "WorkCalendarId": "YYYYYYYYY"
+    "WorkCalendarId": "YYYYYYYYY",
+	"InitialWaitSeconds": 60,
+	"SyncIntervalMinutes": 3,
+	"SyncDaysIntoFuture": 30,
+    "SyncDaysIntoPast": 30,
+	"LogLevel": "Information"
 }
 ```
 
