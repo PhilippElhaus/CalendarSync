@@ -23,14 +23,16 @@ public class CalendarSyncService : BackgroundService
 
 	private readonly SyncConfig _config;
 	private readonly ILogger<CalendarSyncService> _logger;
+	private readonly TrayIconManager _tray;
 	private static bool _isFirstRun = true;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
 
-	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger)
+	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger, TrayIconManager tray)
 	{
 		_config = config ?? throw new ArgumentNullException(nameof(config));
 		_logger = logger ?? throw new ArgumentNullException(nameof(logger));
+		_tray = tray ?? throw new ArgumentNullException(nameof(tray));
 		_initialWait = TimeSpan.FromSeconds(_config.InitialWaitSeconds);
 		_syncInterval = TimeSpan.FromMinutes(_config.SyncIntervalMinutes);
 	}
@@ -61,6 +63,7 @@ public class CalendarSyncService : BackgroundService
 
 	private async Task PerformSyncAsync()
 	{
+		_tray.SetUpdating();
 		_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
 
 		Outlook.Application outlookApp = null;
@@ -172,6 +175,7 @@ public class CalendarSyncService : BackgroundService
 				_logger.LogInformation("First run detected, initiating wipe.");
 				await WipeICloudCalendarAsync(client, calendarUrl);
 				_isFirstRun = false;
+				_tray.SetUpdating();
 			}
 
 			await SyncWithICloudAsync(client, outlookEvents);
@@ -184,7 +188,9 @@ public class CalendarSyncService : BackgroundService
 		{
 			_logger.LogDebug("Cleaning up Outlook COM objects.");
 			CleanupOutlook(outlookApp, outlookNs, calendar, items);
+			_tray.SetIdle();
 		}
+
 
 		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
 	}

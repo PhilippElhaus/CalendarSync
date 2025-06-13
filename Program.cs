@@ -3,14 +3,19 @@ using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
+using System;
 
 namespace CalendarSync
 {
 	public class Program
 	{
+		[STAThread]
 		public static void Main(string[] args)
 		{
-			CreateHostBuilder(args).Build().Run();
+			using var host = CreateHostBuilder(args).Build();
+			var tray = host.Services.GetRequiredService<TrayIconManager>();
+			host.Run();
+			tray.Dispose();
 		}
 
 		public static IHostBuilder CreateHostBuilder(string[] args) =>
@@ -24,10 +29,11 @@ namespace CalendarSync
 						throw new FileNotFoundException("config.json not found in the executable directory.");
 					}
 					var configJson = File.ReadAllText(configPath);
-					var config = JsonConvert.DeserializeObject<SyncConfig>(configJson); 
+					var config = JsonConvert.DeserializeObject<SyncConfig>(configJson);
 
 
 					services.AddSingleton(config);
+					services.AddSingleton<TrayIconManager>();
 					services.AddHostedService<CalendarSyncService>();
 
 					LogEventLevel serilogLevel = LogEventLevel.Information;
