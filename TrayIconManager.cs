@@ -12,6 +12,8 @@ public sealed class TrayIconManager : IDisposable
 	private readonly Icon _deleteIcon;
 	private readonly ContextMenuStrip _menu;
 
+	public event EventHandler? ExitClicked;
+
 	public TrayIconManager()
 	{
 		_idleIcon = new Icon("icon_idle.ico");
@@ -20,7 +22,7 @@ public sealed class TrayIconManager : IDisposable
 
 		_menu = new ContextMenuStrip();
 		var exitItem = new ToolStripMenuItem("Exit");
-               exitItem.Click += (_, _) => Application.Exit();
+		exitItem.Click += (_, _) => ExitClicked?.Invoke(this, EventArgs.Empty);
 		_menu.Items.Add(exitItem);
 
 		_notifyIcon = new NotifyIcon
