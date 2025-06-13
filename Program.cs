@@ -4,6 +4,7 @@ using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
 using System;
+using System.Windows.Forms;
 
 namespace CalendarSync
 {
@@ -14,9 +15,11 @@ namespace CalendarSync
 		{
 			using var host = CreateHostBuilder(args).Build();
 			var tray = host.Services.GetRequiredService<TrayIconManager>();
-			host.Run();
+			host.StartAsync().GetAwaiter().GetResult();
+			Application.Run();
+			host.StopAsync().GetAwaiter().GetResult();
 			tray.Dispose();
-		}
+               }
 
 		public static IHostBuilder CreateHostBuilder(string[] args) =>
 			Host.CreateDefaultBuilder(args)				
