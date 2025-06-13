@@ -2,7 +2,7 @@
 
   <PropertyGroup>
       <OutputType>WinExe</OutputType>
-	  <ApplicationIcon>cal64.ico</ApplicationIcon>
+	  <ApplicationIcon>ico\cal64.ico</ApplicationIcon>
     <TargetFramework>net8.0-windows</TargetFramework>
 	  <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -40,16 +40,16 @@
     <None Update="config.json">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
-	<None Update="cal64.ico">
+	<None Update="ico\cal64.ico">
 	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 	</None>
-	<None Update="icon_delete.ico">
+	<None Update="ico\icon_delete.ico">
 	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 	</None>
-	<None Update="icon_idle.ico">
+	<None Update="ico\icon_idle.ico">
 	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 	</None>
-	<None Update="icon_update.ico">
+	<None Update="ico\icon_update.ico">
 	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 	</None>
   </ItemGroup>

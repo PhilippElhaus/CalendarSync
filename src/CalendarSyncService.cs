@@ -9,7 +9,8 @@ using System.Text;
 using System.Xml.Linq;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
-namespace CalendarSync;
+namespace CalendarSync.src;
+
 public class CalendarSyncService : BackgroundService
 {
 	private record OutlookEventDto(
@@ -39,18 +40,17 @@ public class CalendarSyncService : BackgroundService
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
-
 		_logger.LogInformation("Calendar Sync Service started.");
 
 		_logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
 		await Task.Delay(_initialWait, stoppingToken);
 
-                while (!stoppingToken.IsCancellationRequested)
-                {
-                        try
-                        {
-                                await PerformSyncAsync(stoppingToken);
-                        }
+		while (!stoppingToken.IsCancellationRequested)
+		{
+			try
+			{
+				await PerformSyncAsync(stoppingToken);
+			}
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Unexpected error during sync. Continuing to next cycle.");
@@ -61,8 +61,8 @@ public class CalendarSyncService : BackgroundService
 		_logger.LogInformation("Calendar Sync Service stopped.");
 	}
 
-    private async Task PerformSyncAsync(CancellationToken stoppingToken)
-    {
+	private async Task PerformSyncAsync(CancellationToken stoppingToken)
+	{
 		_tray.SetUpdating();
 		_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
 
@@ -71,12 +71,12 @@ public class CalendarSyncService : BackgroundService
 		Outlook.MAPIFolder calendar = null;
 		Outlook.Items items = null;
 
-		int retryCount = 0;
+		var retryCount = 0;
 		const int maxRetries = 5;
-		bool connected = false;
+		var connected = false;
 
-                while (retryCount < maxRetries && !connected && !stoppingToken.IsCancellationRequested)
-                {
+		while (retryCount < maxRetries && !connected && !stoppingToken.IsCancellationRequested)
+		{
 			try
 			{
 				_logger.LogDebug("Attempting to create Outlook.Application instance.");
@@ -101,7 +101,7 @@ public class CalendarSyncService : BackgroundService
 					return;
 				}
 				_logger.LogDebug("Waiting 10 seconds before retry.");
-                                await Task.Delay(10000, stoppingToken);
+				await Task.Delay(10000, stoppingToken);
 			}
 			catch (Exception ex)
 			{
@@ -114,8 +114,8 @@ public class CalendarSyncService : BackgroundService
 					return;
 				}
 				_logger.LogDebug("Waiting 10 seconds before retry.");
-                                await Task.Delay(10000, stoppingToken);
-                }
+				await Task.Delay(10000, stoppingToken);
+			}
 		}
 
 		if (!connected)
@@ -129,18 +129,18 @@ public class CalendarSyncService : BackgroundService
 			items.IncludeRecurrences = true;
 			items.Sort("[Start]");
 
-			DateTime start = DateTime.Today.AddDays(-(_config.SyncDaysIntoPast));
-			DateTime end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
+			var start = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
+			var end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
-			string filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
+			var filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
 			items = items.Restrict(filter);
 
 			_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
 
 			var allItems = new List<Outlook.AppointmentItem>();
-			int count = 0;
+			var count = 0;
 
-			foreach (object item in items)
+			foreach (var item in items)
 			{
 				if (count++ > 5000)
 				{
@@ -151,9 +151,7 @@ public class CalendarSyncService : BackgroundService
 				try
 				{
 					if (item is Outlook.AppointmentItem appt)
-					{
-						allItems.Add(appt); 
-					}
+						allItems.Add(appt);
 				}
 				catch (Exception ex)
 				{
@@ -168,17 +166,17 @@ public class CalendarSyncService : BackgroundService
 			_logger.LogInformation("Expanded to {Count} atomic Outlook events.", outlookEvents.Count);
 
 			using var client = CreateHttpClient();
-			string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 
 			if (_isFirstRun)
 			{
 				_logger.LogInformation("First run detected, initiating wipe.");
-                                await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken);
+				await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken);
 				_isFirstRun = false;
 				_tray.SetUpdating();
 			}
 
-                        await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
+			await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
 		}
 		catch (Exception ex)
 		{
@@ -191,19 +189,18 @@ public class CalendarSyncService : BackgroundService
 			_tray.SetIdle();
 		}
 
-
 		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
 	}
 
-    private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
-    {
+	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
+	{
 		_logger.LogInformation("Wiping entire iCloud calendar (past and future events).");
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
 		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
 
 		_tray.SetDeleting();
-		int total = iCloudEvents.Count;
-		int done = 0;
+		var total = iCloudEvents.Count;
+		var done = 0;
 
 		foreach (var iCloudUid in iCloudEvents.Keys)
 		{
@@ -211,16 +208,14 @@ public class CalendarSyncService : BackgroundService
 			if (total > 0)
 				_tray.UpdateText($"Deleting... {done}/{total} ({done * 100 / total}%)");
 
-			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
-                        var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-                        await Task.Delay(500, token);
+			var eventUrl = $"{calendarUrl}{iCloudUid}.ics";
+			var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
+			await Task.Delay(300, token);
 			try
 			{
 				var deleteResponse = await client.SendAsync(deleteRequest);
 				if (deleteResponse.IsSuccessStatusCode)
-				{
 					_logger.LogInformation("Deleted iCloud event with UID {Uid}", iCloudUid);
-				}
 				else
 				{
 					_logger.LogWarning("Failed to delete iCloud event UID {Uid}: {Status} - {Reason}", iCloudUid, deleteResponse.StatusCode, deleteResponse.ReasonPhrase);
@@ -228,25 +223,25 @@ public class CalendarSyncService : BackgroundService
 			}
 			catch (Exception ex)
 			{
-                                _logger.LogError(ex, "Exception while deleting iCloud event UID {Uid}", iCloudUid);
-                                await Task.Delay(5000, token);
-                        }
-                }
+				_logger.LogError(ex, "Exception while deleting iCloud event UID {Uid}", iCloudUid);
+				await Task.Delay(5000, token);
+			}
+		}
 
 		if (total > 0)
-			_tray.UpdateText($"Deleting... {total}/{total} (100%)");
+			_tray.UpdateText($"Finalzing cleaning run...");
 
-                _logger.LogInformation("Finished full iCloud calendar wipe. Waiting 2 minutes for cache to clear.");
-                await Task.Delay(TimeSpan.FromMinutes(2), token);
-        }
+		_logger.LogInformation("Finished full iCloud calendar wipe. Waiting 2 minutes for cache to clear.");
+		await Task.Delay(TimeSpan.FromSeconds(30), token);
+	}
 
 	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
 	{
 		var events = new Dictionary<string, OutlookEventDto>();
 		var expandedRecurringIds = new HashSet<string>();
 
-		DateTime syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
-		DateTime syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
+		var syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
+		var syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
 		foreach (var appt in appts)
 		{
@@ -257,7 +252,7 @@ public class CalendarSyncService : BackgroundService
 
 				if (appt.IsRecurring)
 				{
-					string globalId = appt.GlobalAppointmentID;
+					var globalId = appt.GlobalAppointmentID;
 					if (expandedRecurringIds.Contains(globalId))
 						continue;
 
@@ -275,7 +270,7 @@ public class CalendarSyncService : BackgroundService
 				}
 
 				// Single non-recurring event
-				string uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+				var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
 				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
 				events[uid_] = dtoItem;
 			}
@@ -287,16 +282,16 @@ public class CalendarSyncService : BackgroundService
 		return events;
 	}
 
-    private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
-    {
-		string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
+	{
+		var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl); // UID -> etag (unused)
 
 		_logger.LogInformation("Found {Count} iCloud events before sync.", iCloudEvents.Count);
 
 		_tray.SetUpdating();
-		int total = outlookEvents.Count;
-		int done = 0;
+		var total = outlookEvents.Count;
+		var done = 0;
 
 		foreach (var (uid, dto) in outlookEvents)
 		{
@@ -310,9 +305,9 @@ public class CalendarSyncService : BackgroundService
 			var calEvent = CreateCalendarEvent(dto, uid);
 			var calendar = new Calendar { Events = { calEvent } };
 			var serializer = new CalendarSerializer();
-			string newIcs = serializer.SerializeToString(calendar);
+			var newIcs = serializer.SerializeToString(calendar);
 
-			string eventUrl = $"{calendarUrl}{uid}.ics";
+			var eventUrl = $"{calendarUrl}{uid}.ics";
 
 			var requestPut = new HttpRequestMessage(HttpMethod.Put, eventUrl)
 			{
@@ -321,23 +316,21 @@ public class CalendarSyncService : BackgroundService
 
 			var responsePut = await client.SendAsync(requestPut);
 			if (responsePut.IsSuccessStatusCode)
-			{
 				_logger.LogInformation("Synced event '{Subject}'", dto.Subject);
-			}
 			else
 			{
 				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}",
 						dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
-                                await RetryRequestAsync(client, requestPut, token);
-                }
+				await RetryRequestAsync(client, requestPut, token);
+			}
 		}
 
 		if (total > 0)
 			_tray.UpdateText($"Updating... {total}/{total} (100%)");
 
 		var toDelete = iCloudEvents.Keys.Where(u => !outlookEvents.ContainsKey(u)).ToList();
-		int delTotal = toDelete.Count;
-		int delDone = 0;
+		var delTotal = toDelete.Count;
+		var delDone = 0;
 
 		foreach (var uid in toDelete)
 		{
@@ -348,7 +341,7 @@ public class CalendarSyncService : BackgroundService
 			if (delTotal > 0)
 				_tray.UpdateText($"Deleting... {delDone}/{delTotal} ({delDone * 100 / delTotal}%)");
 
-			string eventUrl = $"{calendarUrl}{uid}.ics";
+			var eventUrl = $"{calendarUrl}{uid}.ics";
 			var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
 			var response = await client.SendAsync(request);
 
@@ -380,7 +373,6 @@ public class CalendarSyncService : BackgroundService
 		_logger.LogInformation("Sending PROPFIND to {Url}", calendarUrl);
 		var response = await client.SendAsync(request);
 		var content = await response.Content.ReadAsStringAsync();
-		
 
 		if (!response.IsSuccessStatusCode)
 		{
@@ -392,7 +384,7 @@ public class CalendarSyncService : BackgroundService
 		try
 		{
 			var doc = XDocument.Parse(content);
-			XNamespace dav = "DAV:"; 
+			XNamespace dav = "DAV:";
 			var hrefs = doc.Descendants(dav + "href")
 						   .Where(h => h.Value.EndsWith(".ics"))
 						   .Select(h => h.Value.Split('/').Last().Replace(".ics", ""));
@@ -440,9 +432,9 @@ public class CalendarSyncService : BackgroundService
 		return client;
 	}
 
-    private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original, CancellationToken token)
-    {
-        await Task.Delay(5000, token);
+	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original, CancellationToken token)
+	{
+		await Task.Delay(5000, token);
 		using var request = new HttpRequestMessage(original.Method, original.RequestUri);
 
 		if (original.Content is StringContent sc)
@@ -453,9 +445,7 @@ public class CalendarSyncService : BackgroundService
 
 		var retryResponse = await client.SendAsync(request);
 		if (!retryResponse.IsSuccessStatusCode)
-		{
 			_logger.LogError("Retry failed for {Method} {Url}: {Status} - {Reason}", original.Method, original.RequestUri, retryResponse.StatusCode, retryResponse.ReasonPhrase);
-		}
 	}
 
 	private List<(string uid, DateTime start, DateTime end)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
@@ -477,7 +467,7 @@ public class CalendarSyncService : BackgroundService
 			return results;
 
 		// Handle unsupported recurrence types
-		FrequencyType freq = pattern.RecurrenceType switch
+		var freq = pattern.RecurrenceType switch
 		{
 			Outlook.OlRecurrenceType.olRecursDaily => FrequencyType.Daily,
 			Outlook.OlRecurrenceType.olRecursWeekly => FrequencyType.Weekly,
@@ -529,11 +519,11 @@ public class CalendarSyncService : BackgroundService
 			else if (pattern.PatternEndDate != DateTime.MinValue)
 				rule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
 		}
-		
+
 		var calEvent = new CalendarEvent
-		{			
-			Start = new CalDateTime(((DateTime)appt.Start).ToUniversalTime()),
-			End = new CalDateTime(((DateTime)appt.End).ToUniversalTime()),
+		{
+			Start = new CalDateTime(appt.Start.ToUniversalTime()),
+			End = new CalDateTime(appt.End.ToUniversalTime()),
 			RecurrenceRules = new List<RecurrencePattern> { rule }
 		};
 
@@ -547,12 +537,12 @@ public class CalendarSyncService : BackgroundService
 
 				if (ex.AppointmentItem != null)
 				{
-					DateTime exStart = ((DateTime)ex.AppointmentItem.Start);
-					DateTime exEnd = ((DateTime)ex.AppointmentItem.End);
+					var exStart = ex.AppointmentItem.Start;
+					var exEnd = ex.AppointmentItem.End;
 
 					if (exStart >= from && exStart <= to)
 					{
-						string exUid = $"outlook-{appt.GlobalAppointmentID}-{exStart:yyyyMMddTHHmmss}";
+						var exUid = $"outlook-{appt.GlobalAppointmentID}-{exStart:yyyyMMddTHHmmss}";
 						results.Add((exUid, exStart, exEnd));
 						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStart);
 					}
@@ -570,14 +560,14 @@ public class CalendarSyncService : BackgroundService
 			if (skipDates.Contains(start.Date))
 				continue;
 
-			var end = start.Add((DateTime)appt.End - (DateTime)appt.Start);
-			string uid = $"outlook-{appt.GlobalAppointmentID}-{start:yyyyMMddTHHmmss}";
+			var end = start.Add(appt.End - appt.Start);
+			var uid = $"outlook-{appt.GlobalAppointmentID}-{start:yyyyMMddTHHmmss}";
 			results.Add((uid, start, end));
 		}
 
 		return results;
 	}
-	
+
 	private void CleanupOutlook(Outlook.Application app, Outlook.NameSpace ns, Outlook.MAPIFolder folder, Outlook.Items items)
 	{
 		try
@@ -594,8 +584,6 @@ public class CalendarSyncService : BackgroundService
 		catch
 		{
 			_logger.LogError("Unable to clean up Outlook COM objects.");
-
 		}
 	}
-
 }

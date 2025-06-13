@@ -1,9 +1,6 @@
-﻿using System;
-using System.Diagnostics;
-using System.Drawing;
-using System.Windows.Forms;
+﻿using System.Diagnostics;
 
-namespace CalendarSync;
+namespace CalendarSync.src;
 
 public sealed class TrayIconManager : IDisposable
 {
@@ -17,9 +14,9 @@ public sealed class TrayIconManager : IDisposable
 
 	public TrayIconManager()
 	{
-		_idleIcon = new Icon("icon_idle.ico");
-		_updateIcon = new Icon("icon_update.ico");
-		_deleteIcon = new Icon("icon_delete.ico");
+		_idleIcon = new Icon("ico\\icon_idle.ico");
+		_updateIcon = new Icon("ico\\icon_update.ico");
+		_deleteIcon = new Icon("ico\\icon_delete.ico");
 
 		_menu = new ContextMenuStrip();
 		var logsItem = new ToolStripMenuItem("Logs");
