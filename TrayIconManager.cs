@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -21,6 +22,26 @@ public sealed class TrayIconManager : IDisposable
 		_deleteIcon = new Icon("icon_delete.ico");
 
 		_menu = new ContextMenuStrip();
+		var logsItem = new ToolStripMenuItem("Logs");
+		logsItem.Click += (_, _) =>
+		{
+			var dir = AppDomain.CurrentDomain.BaseDirectory;
+			string? latest = null;
+			var last = DateTime.MinValue;
+			foreach (var file in Directory.GetFiles(dir, "sync*.log"))
+			{
+				var time = File.GetLastWriteTimeUtc(file);
+				if (time > last)
+				{
+					last = time;
+					latest = file;
+				}
+			}
+			if (latest != null)
+				Process.Start(new ProcessStartInfo(latest) { UseShellExecute = true });
+		};
+		_menu.Items.Add(logsItem);
+		
 		var exitItem = new ToolStripMenuItem("Exit");
 		exitItem.Click += (_, _) => ExitClicked?.Invoke(this, EventArgs.Empty);
 		_menu.Items.Add(exitItem);
