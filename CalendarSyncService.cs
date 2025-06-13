@@ -26,7 +26,6 @@ public class CalendarSyncService : BackgroundService
 	private static bool _isFirstRun = true;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
-	private readonly HashSet<DateTime> _brokenExceptionDates = new();
 
 	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger)
 	{
@@ -229,7 +228,7 @@ public class CalendarSyncService : BackgroundService
 		var events = new Dictionary<string, OutlookEventDto>();
 		var expandedRecurringIds = new HashSet<string>();
 
-		DateTime syncStart = DateTime.Today.AddDays(-30);
+		DateTime syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
 		DateTime syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
 		foreach (var appt in appts)
@@ -499,6 +498,19 @@ public class CalendarSyncService : BackgroundService
 			try
 			{
 				skipDates.Add(ex.OriginalDate.Date);
+
+				if (ex.AppointmentItem != null)
+				{
+					DateTime exStart = ((DateTime)ex.AppointmentItem.Start);
+					DateTime exEnd = ((DateTime)ex.AppointmentItem.End);
+
+					if (exStart >= from && exStart <= to)
+					{
+						string exUid = $"outlook-{appt.GlobalAppointmentID}-{exStart:yyyyMMddTHHmmss}";
+						results.Add((exUid, exStart, exEnd));
+						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStart);
+					}
+				}
 			}
 			catch { /* skip broken exceptions */ }
 		}
