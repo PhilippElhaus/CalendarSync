@@ -402,13 +402,21 @@ public class CalendarSyncService : BackgroundService
 		return client;
 	}
 
-	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage request)
+	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original)
 	{
 		await Task.Delay(5000);
+		using var request = new HttpRequestMessage(original.Method, original.RequestUri);
+
+		if (original.Content is StringContent sc)
+		{
+			var body = await sc.ReadAsStringAsync();
+			request.Content = new StringContent(body, Encoding.UTF8, sc.Headers.ContentType?.MediaType ?? "text/plain");
+		}
+
 		var retryResponse = await client.SendAsync(request);
 		if (!retryResponse.IsSuccessStatusCode)
 		{
-			_logger.LogError("Retry failed for {Method} {Url}: {Status} - {Reason}", request.Method, request.RequestUri, retryResponse.StatusCode, retryResponse.ReasonPhrase);
+			_logger.LogError("Retry failed for {Method} {Url}: {Status} - {Reason}", original.Method, original.RequestUri, retryResponse.StatusCode, retryResponse.ReasonPhrase);
 		}
 	}
 
