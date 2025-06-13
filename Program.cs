@@ -15,11 +15,17 @@ namespace CalendarSync
 		{
 			using var host = CreateHostBuilder(args).Build();
 			var tray = host.Services.GetRequiredService<TrayIconManager>();
+			
+			tray.ExitClicked += async (_, _) =>
+			{
+			await host.StopAsync();
+			tray.Dispose();
+			Application.Exit();
+			};
+			
 			host.StartAsync().GetAwaiter().GetResult();
 			Application.Run();
-			host.StopAsync().GetAwaiter().GetResult();
-			tray.Dispose();
-               }
+		}
 
 		public static IHostBuilder CreateHostBuilder(string[] args) =>
 			Host.CreateDefaultBuilder(args)				
