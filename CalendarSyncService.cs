@@ -45,12 +45,12 @@ public class CalendarSyncService : BackgroundService
 		_logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
 		await Task.Delay(_initialWait, stoppingToken);
 
-		while (!stoppingToken.IsCancellationRequested)
-		{
-			try
-			{
-				await PerformSyncAsync();
-			}
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                        try
+                        {
+                                await PerformSyncAsync(stoppingToken);
+                        }
 			catch (Exception ex)
 			{
 				_logger.LogError(ex, "Unexpected error during sync. Continuing to next cycle.");
@@ -61,8 +61,8 @@ public class CalendarSyncService : BackgroundService
 		_logger.LogInformation("Calendar Sync Service stopped.");
 	}
 
-	private async Task PerformSyncAsync()
-	{
+    private async Task PerformSyncAsync(CancellationToken stoppingToken)
+    {
 		_tray.SetUpdating();
 		_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
 
@@ -75,8 +75,8 @@ public class CalendarSyncService : BackgroundService
 		const int maxRetries = 5;
 		bool connected = false;
 
-		while (retryCount < maxRetries && !connected)
-		{
+                while (retryCount < maxRetries && !connected && !stoppingToken.IsCancellationRequested)
+                {
 			try
 			{
 				_logger.LogDebug("Attempting to create Outlook.Application instance.");
@@ -101,7 +101,7 @@ public class CalendarSyncService : BackgroundService
 					return;
 				}
 				_logger.LogDebug("Waiting 10 seconds before retry.");
-				await Task.Delay(10000);
+                                await Task.Delay(10000, stoppingToken);
 			}
 			catch (Exception ex)
 			{
@@ -114,8 +114,8 @@ public class CalendarSyncService : BackgroundService
 					return;
 				}
 				_logger.LogDebug("Waiting 10 seconds before retry.");
-				await Task.Delay(10000);
-			}
+                                await Task.Delay(10000, stoppingToken);
+                }
 		}
 
 		if (!connected)
@@ -173,12 +173,12 @@ public class CalendarSyncService : BackgroundService
 			if (_isFirstRun)
 			{
 				_logger.LogInformation("First run detected, initiating wipe.");
-				await WipeICloudCalendarAsync(client, calendarUrl);
+                                await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken);
 				_isFirstRun = false;
 				_tray.SetUpdating();
 			}
 
-			await SyncWithICloudAsync(client, outlookEvents);
+                        await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
 		}
 		catch (Exception ex)
 		{
@@ -195,8 +195,8 @@ public class CalendarSyncService : BackgroundService
 		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
 	}
 
-	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl)
-	{
+    private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
+    {
 		_logger.LogInformation("Wiping entire iCloud calendar (past and future events).");
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
 		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
@@ -212,8 +212,8 @@ public class CalendarSyncService : BackgroundService
 				_tray.UpdateText($"Deleting... {done}/{total} ({done * 100 / total}%)");
 
 			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
-			var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-			await Task.Delay(500);
+                        var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
+                        await Task.Delay(500, token);
 			try
 			{
 				var deleteResponse = await client.SendAsync(deleteRequest);
@@ -228,17 +228,17 @@ public class CalendarSyncService : BackgroundService
 			}
 			catch (Exception ex)
 			{
-				_logger.LogError(ex, "Exception while deleting iCloud event UID {Uid}", iCloudUid);
-				await Task.Delay(5000);
-			}
-		}
+                                _logger.LogError(ex, "Exception while deleting iCloud event UID {Uid}", iCloudUid);
+                                await Task.Delay(5000, token);
+                        }
+                }
 
 		if (total > 0)
 			_tray.UpdateText($"Deleting... {total}/{total} (100%)");
 
-		_logger.LogInformation("Finished full iCloud calendar wipe. Waiting 2 minutes for cache to clear.");
-		await Task.Delay(TimeSpan.FromMinutes(2));
-	}
+                _logger.LogInformation("Finished full iCloud calendar wipe. Waiting 2 minutes for cache to clear.");
+                await Task.Delay(TimeSpan.FromMinutes(2), token);
+        }
 
 	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
 	{
@@ -287,8 +287,8 @@ public class CalendarSyncService : BackgroundService
 		return events;
 	}
 
-	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents)
-	{
+    private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
+    {
 		string calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl); // UID -> etag (unused)
 
@@ -328,8 +328,8 @@ public class CalendarSyncService : BackgroundService
 			{
 				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}",
 						dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
-				await RetryRequestAsync(client, requestPut);
-			}
+                                await RetryRequestAsync(client, requestPut, token);
+                }
 		}
 
 		if (total > 0)
@@ -440,9 +440,9 @@ public class CalendarSyncService : BackgroundService
 		return client;
 	}
 
-	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original)
-	{
-		await Task.Delay(5000);
+    private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original, CancellationToken token)
+    {
+        await Task.Delay(5000, token);
 		using var request = new HttpRequestMessage(original.Method, original.RequestUri);
 
 		if (original.Content is StringContent sc)
