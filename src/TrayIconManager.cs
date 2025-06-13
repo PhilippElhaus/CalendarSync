@@ -47,7 +47,7 @@ public sealed class TrayIconManager : IDisposable
 		{
 			Icon = _idleIcon,
 			Visible = true,
-			Text = "Idle...",
+			Text = "Waiting to Start...",
 			ContextMenuStrip = _menu
 		};
 	}
