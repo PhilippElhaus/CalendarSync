@@ -12,6 +12,7 @@ As a COM-Interop application it is optimized to run silently via a Scheduled Tas
 - Adds a **10-minute** and **3-minute alarm notification** for every synced event
 - Runs silently and logs to `sync.log`
 - Designed for **restricted corporate environments** — no UI required
+- Tray icon with status tooltip
 
 ## Requirements
 

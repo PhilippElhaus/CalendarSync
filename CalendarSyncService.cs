@@ -201,8 +201,16 @@ public class CalendarSyncService : BackgroundService
 		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
 		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
 
+		_tray.SetDeleting();
+		int total = iCloudEvents.Count;
+		int done = 0;
+
 		foreach (var iCloudUid in iCloudEvents.Keys)
 		{
+			done++;
+			if (total > 0)
+				_tray.UpdateText($"Deleting... {done}/{total} ({done * 100 / total}%)");
+
 			string eventUrl = $"{calendarUrl}{iCloudUid}.ics";
 			var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
 			await Task.Delay(500);
@@ -224,6 +232,9 @@ public class CalendarSyncService : BackgroundService
 				await Task.Delay(5000);
 			}
 		}
+
+		if (total > 0)
+			_tray.UpdateText($"Deleting... {total}/{total} (100%)");
 
 		_logger.LogInformation("Finished full iCloud calendar wipe. Waiting 2 minutes for cache to clear.");
 		await Task.Delay(TimeSpan.FromMinutes(2));
@@ -283,10 +294,18 @@ public class CalendarSyncService : BackgroundService
 
 		_logger.LogInformation("Found {Count} iCloud events before sync.", iCloudEvents.Count);
 
+		_tray.SetUpdating();
+		int total = outlookEvents.Count;
+		int done = 0;
+
 		foreach (var (uid, dto) in outlookEvents)
 		{
 			if (dto == null)
 				continue;
+
+			done++;
+			if (total > 0)
+				_tray.UpdateText($"Updating... {done}/{total} ({done * 100 / total}%)");
 
 			var calEvent = CreateCalendarEvent(dto, uid);
 			var calendar = new Calendar { Events = { calEvent } };
@@ -308,26 +327,39 @@ public class CalendarSyncService : BackgroundService
 			else
 			{
 				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}",
-					dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
+						dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
 				await RetryRequestAsync(client, requestPut);
 			}
 		}
 
-		// Cleanup orphaned iCloud events not present in Outlook
-		foreach (var uid in iCloudEvents.Keys)
-		{
-			if (!outlookEvents.ContainsKey(uid))
-			{
-				string eventUrl = $"{calendarUrl}{uid}.ics";
-				var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-				var response = await client.SendAsync(request);
+		if (total > 0)
+			_tray.UpdateText($"Updating... {total}/{total} (100%)");
 
-				if (response.IsSuccessStatusCode)
-					_logger.LogInformation("Deleted orphaned iCloud event UID {Uid}", uid);
-				else
-					_logger.LogWarning("Failed to delete orphaned iCloud event UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
-			}
+		var toDelete = iCloudEvents.Keys.Where(u => !outlookEvents.ContainsKey(u)).ToList();
+		int delTotal = toDelete.Count;
+		int delDone = 0;
+
+		foreach (var uid in toDelete)
+		{
+			if (delDone == 0 && delTotal > 0)
+				_tray.SetDeleting();
+
+			delDone++;
+			if (delTotal > 0)
+				_tray.UpdateText($"Deleting... {delDone}/{delTotal} ({delDone * 100 / delTotal}%)");
+
+			string eventUrl = $"{calendarUrl}{uid}.ics";
+			var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
+			var response = await client.SendAsync(request);
+
+			if (response.IsSuccessStatusCode)
+				_logger.LogInformation("Deleted orphaned iCloud event UID {Uid}", uid);
+			else
+				_logger.LogWarning("Failed to delete orphaned iCloud event UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
 		}
+
+		if (delTotal > 0)
+			_tray.UpdateText($"Deleting... {delTotal}/{delTotal} (100%)");
 	}
 
 	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl)
