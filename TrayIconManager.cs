@@ -20,7 +20,7 @@ public sealed class TrayIconManager : IDisposable
 
 		_menu = new ContextMenuStrip();
 		var exitItem = new ToolStripMenuItem("Exit");
-		exitItem.Click += (_, _) => Environment.Exit(0);
+               exitItem.Click += (_, _) => Application.Exit();
 		_menu.Items.Add(exitItem);
 
 		_notifyIcon = new NotifyIcon
