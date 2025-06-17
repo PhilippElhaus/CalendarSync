@@ -39,9 +39,10 @@ public class CalendarSyncService : BackgroundService
 		_syncInterval = TimeSpan.FromMinutes(_config.SyncIntervalMinutes);
 	}
 
-	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-	{
-		_logger.LogInformation("Calendar Sync Service started.");
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+                _logger.LogInformation("Calendar Sync Service started.");
+                EventRecorder.WriteEntry("Service started", EventLogEntryType.Information);
 
 		_logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
 		await Task.Delay(_initialWait, stoppingToken);
@@ -59,12 +60,13 @@ public class CalendarSyncService : BackgroundService
 			_logger.LogDebug("Waiting for next sync cycle.");
 			await Task.Delay(_syncInterval, stoppingToken);
 		}
-		_logger.LogInformation("Calendar Sync Service stopped.");
-	}
+                _logger.LogInformation("Calendar Sync Service stopped.");
+                EventRecorder.WriteEntry("Service stopped", EventLogEntryType.Information);
+        }
 
 	private async Task PerformSyncAsync(CancellationToken stoppingToken)
 	{
-		EventLog.WriteEntry("Main", "Started a Sync", EventLogEntryType.Information);
+                EventRecorder.WriteEntry("Sync started", EventLogEntryType.Information);
 		_tray.SetUpdating();
 		_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
 
@@ -97,11 +99,12 @@ public class CalendarSyncService : BackgroundService
 				retryCount++;
 				_logger.LogWarning(ex, $"Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {retryCount}/{maxRetries}.");
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
-				if (retryCount == maxRetries)
-				{
-					_logger.LogError("Max retries reached for Outlook connection. Skipping this sync cycle.");
-					return;
-				}
+                                if (retryCount == maxRetries)
+                                {
+                                        _logger.LogError("Max retries reached for Outlook connection. Skipping this sync cycle.");
+                                        EventRecorder.WriteEntry("Outlook connection failed", EventLogEntryType.Error);
+                                        return;
+                                }
 				_logger.LogDebug("Waiting 10 seconds before retry.");
 				await Task.Delay(10000, stoppingToken);
 			}
@@ -110,11 +113,12 @@ public class CalendarSyncService : BackgroundService
 				retryCount++;
 				_logger.LogWarning(ex, "Unexpected error connecting to Outlook, retry {Retry}/{MaxRetries}.", retryCount, maxRetries);
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
-				if (retryCount == maxRetries)
-				{
-					_logger.LogError("Max retries reached for Outlook connection. Skipping this sync cycle.");
-					return;
-				}
+                                if (retryCount == maxRetries)
+                                {
+                                        _logger.LogError("Max retries reached for Outlook connection. Skipping this sync cycle.");
+                                        EventRecorder.WriteEntry("Outlook connection failed", EventLogEntryType.Error);
+                                        return;
+                                }
 				_logger.LogDebug("Waiting 10 seconds before retry.");
 				await Task.Delay(10000, stoppingToken);
 			}
@@ -180,7 +184,7 @@ public class CalendarSyncService : BackgroundService
 
 			await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
 
-			EventLog.WriteEntry("Main", "Finished a Sync", EventLogEntryType.Information);
+                        EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
 		}
 		catch (Exception ex)
 		{
@@ -378,11 +382,12 @@ public class CalendarSyncService : BackgroundService
 		var response = await client.SendAsync(request);
 		var content = await response.Content.ReadAsStringAsync();
 
-		if (!response.IsSuccessStatusCode)
-		{
-			_logger.LogWarning("Failed to fetch iCloud events: {Status} - {Reason}", response.StatusCode, response.ReasonPhrase);
-			return new Dictionary<string, string>();
-		}
+                if (!response.IsSuccessStatusCode)
+                {
+                        _logger.LogWarning("Failed to fetch iCloud events: {Status} - {Reason}", response.StatusCode, response.ReasonPhrase);
+                        EventRecorder.WriteEntry("iCloud fetch failed", EventLogEntryType.Error);
+                        return new Dictionary<string, string>();
+                }
 
 		var events = new Dictionary<string, string>();
 		try
@@ -399,10 +404,11 @@ public class CalendarSyncService : BackgroundService
 				_logger.LogDebug("Found iCloud event UID: {Uid}", uid);
 			}
 		}
-		catch (Exception ex)
-		{
-			_logger.LogError(ex, "Failed to parse PROPFIND response: {Content}", content);
-		}
+                catch (Exception ex)
+                {
+                        _logger.LogError(ex, "Failed to parse PROPFIND response: {Content}", content);
+                        EventRecorder.WriteEntry("iCloud response parse failed", EventLogEntryType.Error);
+                }
 
 		_logger.LogInformation("Parsed {Count} events from PROPFIND response.", events.Count);
 		return events;
