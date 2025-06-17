@@ -4,6 +4,7 @@ using Ical.Net.DataTypes;
 using Ical.Net.Serialization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Linq;
@@ -63,6 +64,7 @@ public class CalendarSyncService : BackgroundService
 
 	private async Task PerformSyncAsync(CancellationToken stoppingToken)
 	{
+		EventLog.WriteEntry("Main", "Started a Sync", EventLogEntryType.Information);
 		_tray.SetUpdating();
 		_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
 
@@ -177,6 +179,8 @@ public class CalendarSyncService : BackgroundService
 			}
 
 			await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
+
+			EventLog.WriteEntry("Main", "Finished a Sync", EventLogEntryType.Information);
 		}
 		catch (Exception ex)
 		{
