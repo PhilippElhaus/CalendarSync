@@ -70,6 +70,9 @@ Logs are written to:
 ```
 C:\CalendarSync\sync.log
 ```
+High level events are also written to the Windows Event Log under the
+"Application" log. Run the program once as administrator to register the
+"CalendarSync" event source.
 
 ## Security
 

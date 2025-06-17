@@ -11,54 +11,40 @@ namespace CalendarSync;
 
 public class Program
 {
-	[STAThread]
-	public static void Main(string[] args)
-	{
+        [STAThread]
+        public static void Main(string[] args)
+        {
+                EventRecorder.Initialize();
+                SubscribeToGlobalExceptions();
+                EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
 
-		string source = "CalendarSync";
-		string logName = "Application";
-
-		if (!EventLog.SourceExists(source))
-		{			
-			EventLog.CreateEventSource(source, logName);
-			Process.Start(new ProcessStartInfo
-			{
-				FileName = Assembly.GetExecutingAssembly().Location,
-				UseShellExecute = true,
-				Verb = "runas"
-			});
-			return;
-		}
-
-		using EventLog eventLog = new EventLog(logName)
-		{
-			Source = source
-		};
-
-		using var host = CreateHostBuilder(args).Build();
-		var tray = host.Services.GetRequiredService<TrayIconManager>();
+                using var host = CreateHostBuilder(args).Build();
+                var tray = host.Services.GetRequiredService<TrayIconManager>();
 		
-		tray.ExitClicked += async (_, _) =>
-		{
-		await host.StopAsync();
-		tray.Dispose();
-		Application.Exit();
-		};
+                tray.ExitClicked += async (_, _) =>
+                {
+                        EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
+                        await host.StopAsync();
+                        tray.Dispose();
+                        Application.Exit();
+                };
 		
-		host.StartAsync().GetAwaiter().GetResult();
-		Application.Run();
-	}
+                host.StartAsync().GetAwaiter().GetResult();
+                Application.Run();
+                EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
+        }
 
-	public static IHostBuilder CreateHostBuilder(string[] args) =>
-		Host.CreateDefaultBuilder(args)				
-			.ConfigureServices((hostContext, services) =>
-			{
+        public static IHostBuilder CreateHostBuilder(string[] args) =>
+                Host.CreateDefaultBuilder(args)
+                        .ConfigureServices((hostContext, services) =>
+                        {
 				
-				var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
-				if (!File.Exists(configPath))
-				{
-					throw new FileNotFoundException("config.json not found in the executable directory.");
-				}
+                                var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+                                if (!File.Exists(configPath))
+                                {
+                                        EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
+                                        throw new FileNotFoundException("config.json not found in the executable directory.");
+                                }
 				var configJson = File.ReadAllText(configPath);
 				var config = JsonConvert.DeserializeObject<SyncConfig>(configJson);
 
@@ -86,7 +72,30 @@ public class Program
 						)
 					.CreateLogger();
 
-				services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
-				EventLog.WriteEntry("Main", "Read Config & Started Logging", EventLogEntryType.Information);
-			});
+                                services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
+                                EventRecorder.WriteEntry("Configuration loaded", EventLogEntryType.Information);
+                        });
+
+        private static void SubscribeToGlobalExceptions()
+        {
+                AppDomain.CurrentDomain.UnhandledException += (_, e) => HandleGlobalException(e.ExceptionObject as Exception);
+                TaskScheduler.UnobservedTaskException += (_, e) =>
+                {
+                        HandleGlobalException(e.Exception);
+                        e.SetObserved();
+                };
+                Application.ThreadException += (_, e) => HandleGlobalException(e.Exception);
+        }
+
+        private static void HandleGlobalException(Exception? ex)
+        {
+                if (ex == null)
+                        return;
+                try
+                {
+                        Log.Fatal(ex, "Unhandled exception");
+                }
+                catch { }
+                EventRecorder.WriteEntry(ex.ToString(), EventLogEntryType.Error);
+        }
 }
