@@ -5,7 +5,7 @@ namespace CalendarSync.src;
 public static class EventRecorder
 {
     public const string Source = "CalendarSync";
-    private const string LogName = "Application";
+    private const string LogName = "CalendarSync/Operations";
     private static bool _enabled;
 
     public static void Initialize()
