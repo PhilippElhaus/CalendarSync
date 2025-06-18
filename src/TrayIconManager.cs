@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
+using System.IO;
 
 namespace CalendarSync.src;
 
@@ -12,11 +13,12 @@ public sealed class TrayIconManager : IDisposable
 
 	public event EventHandler? ExitClicked;
 
-	public TrayIconManager()
-	{
-		_idleIcon = new Icon("ico\\icon_idle.ico");
-		_updateIcon = new Icon("ico\\icon_update.ico");
-		_deleteIcon = new Icon("ico\\icon_delete.ico");
+        public TrayIconManager()
+        {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                _idleIcon = new Icon(Path.Combine(baseDir, "ico", "icon_idle.ico"));
+                _updateIcon = new Icon(Path.Combine(baseDir, "ico", "icon_update.ico"));
+                _deleteIcon = new Icon(Path.Combine(baseDir, "ico", "icon_delete.ico"));
 
 		_menu = new ContextMenuStrip();
 		var logsItem = new ToolStripMenuItem("Logs");
