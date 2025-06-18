@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.IO;
 
 namespace CalendarSync.src;
 
@@ -13,12 +12,12 @@ public sealed class TrayIconManager : IDisposable
 
 	public event EventHandler? ExitClicked;
 
-        public TrayIconManager()
-        {
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                _idleIcon = new Icon(Path.Combine(baseDir, "ico", "icon_idle.ico"));
-                _updateIcon = new Icon(Path.Combine(baseDir, "ico", "icon_update.ico"));
-                _deleteIcon = new Icon(Path.Combine(baseDir, "ico", "icon_delete.ico"));
+	public TrayIconManager()
+	{
+		var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+		_idleIcon = new Icon(Path.Combine(baseDir, "ico", "icon_idle.ico"));
+		_updateIcon = new Icon(Path.Combine(baseDir, "ico", "icon_update.ico"));
+		_deleteIcon = new Icon(Path.Combine(baseDir, "ico", "icon_delete.ico"));
 
 		_menu = new ContextMenuStrip();
 		var logsItem = new ToolStripMenuItem("Logs");
@@ -40,7 +39,7 @@ public sealed class TrayIconManager : IDisposable
 				Process.Start(new ProcessStartInfo(latest) { UseShellExecute = true });
 		};
 		_menu.Items.Add(logsItem);
-		
+
 		var exitItem = new ToolStripMenuItem("Exit");
 		exitItem.Click += (_, _) => ExitClicked?.Invoke(this, EventArgs.Empty);
 		_menu.Items.Add(exitItem);
