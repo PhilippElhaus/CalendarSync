@@ -25,19 +25,23 @@ public class CalendarSyncService : BackgroundService
 
 	private readonly SyncConfig _config;
 	private readonly ILogger<CalendarSyncService> _logger;
-	private readonly TrayIconManager _tray;
-	private static bool _isFirstRun = true;
-	private readonly TimeSpan _initialWait;
-	private readonly TimeSpan _syncInterval;
+        private readonly TrayIconManager _tray;
+        private static bool _isFirstRun = true;
+        private readonly TimeSpan _initialWait;
+        private readonly TimeSpan _syncInterval;
+        private readonly string _sourceId;
+        private readonly string? _tag;
 
-	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger, TrayIconManager tray)
-	{
-		_config = config ?? throw new ArgumentNullException(nameof(config));
-		_logger = logger ?? throw new ArgumentNullException(nameof(logger));
-		_tray = tray ?? throw new ArgumentNullException(nameof(tray));
-		_initialWait = TimeSpan.FromSeconds(_config.InitialWaitSeconds);
-		_syncInterval = TimeSpan.FromMinutes(_config.SyncIntervalMinutes);
-	}
+        public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger, TrayIconManager tray)
+        {
+                _config = config ?? throw new ArgumentNullException(nameof(config));
+                _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+                _tray = tray ?? throw new ArgumentNullException(nameof(tray));
+                _initialWait = TimeSpan.FromSeconds(_config.InitialWaitSeconds);
+                _syncInterval = TimeSpan.FromMinutes(_config.SyncIntervalMinutes);
+                _sourceId = _config.SourceId ?? "";
+                _tag = string.IsNullOrWhiteSpace(_config.EventTag) ? null : _config.EventTag!.Trim();
+        }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -200,10 +204,10 @@ public class CalendarSyncService : BackgroundService
 		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
 	}
 
-	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
-	{
-		_logger.LogInformation("Wiping entire iCloud calendar (past and future events).");
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
+        private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
+        {
+                _logger.LogInformation("Cleaning existing events for source {SourceId}.", _sourceId);
+                var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
 		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
 
 		_tray.SetDeleting();
@@ -243,10 +247,10 @@ public class CalendarSyncService : BackgroundService
 		await Task.Delay(TimeSpan.FromSeconds(30), token);
 	}
 
-	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
-	{
-		var events = new Dictionary<string, OutlookEventDto>();
-		var expandedRecurringIds = new HashSet<string>();
+        private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
+        {
+                var events = new Dictionary<string, OutlookEventDto>();
+                var expandedRecurringIds = new HashSet<string>();
 
 		var syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
 		var syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
@@ -269,26 +273,26 @@ public class CalendarSyncService : BackgroundService
 					var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
 					_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
 
-					foreach (var (uid, start, end) in instances)
-					{
-						var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
-						events[uid] = dto;
-					}
-					continue;
-				}
+                                        foreach (var (uid, start, end) in instances)
+                                        {
+                                                var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
+                                                events[$"{_sourceId}-{uid}"] = dto;
+                                        }
+                                        continue;
+                                }
 
 				// Single non-recurring event
-				var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
-				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
-				events[uid_] = dtoItem;
-			}
-			catch (Exception ex)
-			{
-				_logger.LogWarning(ex, "Failed to process appointment.");
-			}
-		}
-		return events;
-	}
+                                var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+                                var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
+                                events[$"{_sourceId}-{uid_}"] = dtoItem;
+                        }
+                        catch (Exception ex)
+                        {
+                                _logger.LogWarning(ex, "Failed to process appointment.");
+                        }
+                }
+                return events;
+        }
 
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
@@ -398,11 +402,13 @@ public class CalendarSyncService : BackgroundService
 						   .Where(h => h.Value.EndsWith(".ics"))
 						   .Select(h => h.Value.Split('/').Last().Replace(".ics", ""));
 
-			foreach (var uid in hrefs)
-			{
-				events[uid] = "";
-				_logger.LogDebug("Found iCloud event UID: {Uid}", uid);
-			}
+                        foreach (var uid in hrefs)
+                        {
+                                if (!string.IsNullOrEmpty(_sourceId) && !uid.StartsWith(_sourceId + "-"))
+                                        continue;
+                                events[uid] = "";
+                                _logger.LogDebug("Found iCloud event UID: {Uid}", uid);
+                        }
 		}
                 catch (Exception ex)
                 {
@@ -416,15 +422,19 @@ public class CalendarSyncService : BackgroundService
 
 	private CalendarEvent CreateCalendarEvent(OutlookEventDto appt, string uid)
 	{
-		var calEvent = new CalendarEvent
-		{
-			Summary = appt.Subject ?? "No Subject",
-			Start = new CalDateTime(appt.Start.ToUniversalTime()),
-			End = new CalDateTime(appt.End.ToUniversalTime()),
-			Location = appt.Location ?? "",
-			Uid = uid,
-			Description = appt.Body ?? ""
-		};
+                var summary = appt.Subject ?? "No Subject";
+                if (!string.IsNullOrEmpty(_tag))
+                        summary = $"[{_tag}] {summary}";
+
+                var calEvent = new CalendarEvent
+                {
+                        Summary = summary,
+                        Start = new CalDateTime(appt.Start.ToUniversalTime()),
+                        End = new CalDateTime(appt.End.ToUniversalTime()),
+                        Location = appt.Location ?? "",
+                        Uid = uid,
+                        Description = appt.Body ?? ""
+                };
 
 		// Reminders
 		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });

@@ -45,8 +45,13 @@ public class Program
 										EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
 										throw new FileNotFoundException("config.json not found in the executable directory.");
 								}
-				var configJson = File.ReadAllText(configPath);
-				var config = JsonConvert.DeserializeObject<SyncConfig>(configJson);
+                                var configJson = File.ReadAllText(configPath);
+                                var config = JsonConvert.DeserializeObject<SyncConfig>(configJson);
+                                if (string.IsNullOrWhiteSpace(config?.SourceId))
+                                {
+                                                config!.SourceId = Guid.NewGuid().ToString("N");
+                                                File.WriteAllText(configPath, JsonConvert.SerializeObject(config, Formatting.Indented));
+                                }
 
 				services.AddSingleton<SyncConfig>(config!);
 				services.AddSingleton<TrayIconManager>();
