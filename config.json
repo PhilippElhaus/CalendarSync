@@ -7,6 +7,8 @@
 	"InitialWaitSeconds": 30,
 	"SyncIntervalMinutes": 3,
 	"SyncDaysIntoFuture": 30,
-	"SyncDaysIntoPast": 30,
-	"LogLevel": "Information"
+        "SyncDaysIntoPast": 30,
+        "LogLevel": "Information",
+        "SourceId": "",
+        "EventTag": ""
 }
