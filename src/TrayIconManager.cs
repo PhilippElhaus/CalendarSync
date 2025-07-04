@@ -8,9 +8,10 @@ public sealed class TrayIconManager : IDisposable
 	private readonly Icon _idleIcon;
 	private readonly Icon _updateIcon;
 	private readonly Icon _deleteIcon;
-	private readonly ContextMenuStrip _menu;
+        private readonly ContextMenuStrip _menu;
 
-	public event EventHandler? ExitClicked;
+        public event EventHandler? ExitClicked;
+        public event EventHandler? WipeIosCalendarClicked;
 
 	public TrayIconManager()
 	{
@@ -38,7 +39,20 @@ public sealed class TrayIconManager : IDisposable
 			if (latest != null)
 				Process.Start(new ProcessStartInfo(latest) { UseShellExecute = true });
 		};
-		_menu.Items.Add(logsItem);
+                _menu.Items.Add(logsItem);
+
+                var wipeItem = new ToolStripMenuItem("Wipe iOS Calendar");
+                wipeItem.Click += (_, _) =>
+                {
+                        var confirm = MessageBox.Show(
+                                "This will delete all events from the iCloud calendar. Continue?",
+                                "Confirm Wipe",
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Warning);
+                        if (confirm == DialogResult.Yes)
+                                WipeIosCalendarClicked?.Invoke(this, EventArgs.Empty);
+                };
+                _menu.Items.Add(wipeItem);
 
 		var exitItem = new ToolStripMenuItem("Exit");
 		exitItem.Click += (_, _) => ExitClicked?.Invoke(this, EventArgs.Empty);

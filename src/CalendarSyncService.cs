@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Text;
 using System.Xml.Linq;
 using Outlook = Microsoft.Office.Interop.Outlook;
@@ -31,6 +32,8 @@ public class CalendarSyncService : BackgroundService
         private readonly TimeSpan _syncInterval;
         private readonly string _sourceId;
         private readonly string? _tag;
+        private readonly SemaphoreSlim _opLock = new SemaphoreSlim(1, 1);
+        private CancellationTokenSource _currentOpCts = new CancellationTokenSource();
 
         public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger, TrayIconManager tray)
         {
@@ -48,22 +51,29 @@ public class CalendarSyncService : BackgroundService
                 _logger.LogInformation("Calendar Sync Service started.");
                 EventRecorder.WriteEntry("Service started", EventLogEntryType.Information);
 
-		_logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
-		await Task.Delay(_initialWait, stoppingToken);
+                _logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
+                await Task.Delay(_initialWait, stoppingToken);
 
-		while (!stoppingToken.IsCancellationRequested)
-		{
-			try
-			{
-				await PerformSyncAsync(stoppingToken);
-			}
-			catch (Exception ex)
-			{
-				_logger.LogError(ex, "Unexpected error during sync. Continuing to next cycle.");
-			}
-			_logger.LogDebug("Waiting for next sync cycle.");
-			await Task.Delay(_syncInterval, stoppingToken);
-		}
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                        _currentOpCts = new CancellationTokenSource();
+                        await _opLock.WaitAsync(stoppingToken);
+                        var token = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _currentOpCts.Token).Token;
+                        try
+                        {
+                                await PerformSyncAsync(token);
+                        }
+                        catch (Exception ex)
+                        {
+                                _logger.LogError(ex, "Unexpected error during sync. Continuing to next cycle.");
+                        }
+                        finally
+                        {
+                                _opLock.Release();
+                        }
+                        _logger.LogDebug("Waiting for next sync cycle.");
+                        await Task.Delay(_syncInterval, stoppingToken);
+                }
                 _logger.LogInformation("Calendar Sync Service stopped.");
                 EventRecorder.WriteEntry("Service stopped", EventLogEntryType.Information);
         }
@@ -181,7 +191,7 @@ public class CalendarSyncService : BackgroundService
 			if (_isFirstRun)
 			{
 				_logger.LogInformation("First run detected, initiating wipe.");
-				await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken);
+                                await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken, true);
 				_isFirstRun = false;
 				_tray.SetUpdating();
 			}
@@ -204,10 +214,14 @@ public class CalendarSyncService : BackgroundService
 		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
 	}
 
-        private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
+        private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token, bool filterBySource)
         {
-                _logger.LogInformation("Cleaning existing events for source {SourceId}.", _sourceId);
-                var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl);
+                if (filterBySource)
+                        _logger.LogInformation("Cleaning existing events for source {SourceId}.", _sourceId);
+                else
+                        _logger.LogInformation("Cleaning all existing iCloud events.");
+
+                var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, filterBySource);
 		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
 
 		_tray.SetDeleting();
@@ -244,8 +258,26 @@ public class CalendarSyncService : BackgroundService
 			_tray.UpdateText($"Finalzing cleaning run...");
 
 		_logger.LogInformation("Finished full iCloud calendar wipe. Waiting 2 minutes for cache to clear.");
-		await Task.Delay(TimeSpan.FromSeconds(30), token);
-	}
+                await Task.Delay(TimeSpan.FromSeconds(30), token);
+        }
+
+        public async Task WipeEntireCalendarAsync()
+        {
+                _currentOpCts.Cancel();
+                await _opLock.WaitAsync();
+                try
+                {
+                        _currentOpCts = new CancellationTokenSource();
+                        var token = _currentOpCts.Token;
+                        using var client = CreateHttpClient();
+                        var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+                        await WipeICloudCalendarAsync(client, calendarUrl, token, false);
+                }
+                finally
+                {
+                        _opLock.Release();
+                }
+        }
 
         private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
         {
@@ -297,7 +329,7 @@ public class CalendarSyncService : BackgroundService
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
 		var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl); // UID -> etag (unused)
+                var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, true); // UID -> etag (unused)
 
 		_logger.LogInformation("Found {Count} iCloud events before sync.", iCloudEvents.Count);
 
@@ -355,7 +387,7 @@ public class CalendarSyncService : BackgroundService
 
 			var eventUrl = $"{calendarUrl}{uid}.ics";
 			var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-			var response = await client.SendAsync(request);
+                var response = await client.SendAsync(request);
 
 			if (response.IsSuccessStatusCode)
 				_logger.LogInformation("Deleted orphaned iCloud event UID {Uid}", uid);
@@ -367,8 +399,8 @@ public class CalendarSyncService : BackgroundService
 			_tray.UpdateText($"Deleting... {delTotal}/{delTotal} (100%)");
 	}
 
-	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl)
-	{
+        private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl, bool filterBySource)
+        {
 		var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), calendarUrl)
 		{
 			Content = new StringContent(
@@ -404,7 +436,7 @@ public class CalendarSyncService : BackgroundService
 
                         foreach (var uid in hrefs)
                         {
-                                if (!string.IsNullOrEmpty(_sourceId) && !uid.StartsWith(_sourceId + "-"))
+                                if (filterBySource && !string.IsNullOrEmpty(_sourceId) && !uid.StartsWith(_sourceId + "-"))
                                         continue;
                                 events[uid] = "";
                                 _logger.LogDebug("Found iCloud event UID: {Uid}", uid);

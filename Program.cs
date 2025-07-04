@@ -19,15 +19,21 @@ public class Program
 				EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
 
 				using var host = CreateHostBuilder(args).Build();
-				var tray = host.Services.GetRequiredService<TrayIconManager>();
+                                var tray = host.Services.GetRequiredService<TrayIconManager>();
+                                var service = host.Services.GetRequiredService<CalendarSyncService>();
 		
-				tray.ExitClicked += async (_, _) =>
-				{
-						EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
-						await host.StopAsync();
-						tray.Dispose();
-						Application.Exit();
-				};
+                                tray.ExitClicked += async (_, _) =>
+                                {
+                                                EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
+                                                await host.StopAsync();
+                                                tray.Dispose();
+                                                Application.Exit();
+                                };
+
+                                tray.WipeIosCalendarClicked += async (_, _) =>
+                                {
+                                                await service.WipeEntireCalendarAsync();
+                                };
 		
 				host.StartAsync().GetAwaiter().GetResult();
 				Application.Run();
