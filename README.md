@@ -13,6 +13,7 @@ As a COM-Interop application it is optimized to run silently via a Scheduled Tas
 - Runs silently and logs to `sync.log`
 - Designed for **restricted corporate environments** — no UI required
 - Tray icon with status tooltip
+- Ability to sync multiple source calendars into the target.
 
 ## Requirements
 
@@ -45,7 +46,9 @@ C:\CalendarSync\
     "SyncIntervalMinutes": 3,
     "SyncDaysIntoFuture": 30,
     "SyncDaysIntoPast": 30,
-    "LogLevel": "Information"
+    "LogLevel": "Information",
+    "SourceId": "in_case_you_want_to_sync_from_multiple_calendars",
+	"EventTag": "this_marks_an_entry_with_a_prefix_e.g_ [COMPANY]"
 }
 ```
 
