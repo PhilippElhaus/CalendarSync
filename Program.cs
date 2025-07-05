@@ -5,108 +5,108 @@ using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
 using System.Diagnostics;
-using System.Reflection;
 
 namespace CalendarSync;
 
 public class Program
 {
-		[STAThread]
-		public static void Main(string[] args)
+	[STAThread]
+	public static void Main(string[] args)
+	{
+		EventRecorder.Initialize();
+		SubscribeToGlobalExceptions();
+		EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
+
+		using var host = CreateHostBuilder(args).Build();
+		var tray = host.Services.GetRequiredService<TrayIconManager>();
+		var service = host.Services.GetRequiredService<CalendarSyncService>();
+
+		tray.ExitClicked += async (_, _) =>
 		{
-				EventRecorder.Initialize();
-				SubscribeToGlobalExceptions();
-				EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
+			EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
+			await host.StopAsync();
+			tray.Dispose();
+			Application.Exit();
+		};
 
-				using var host = CreateHostBuilder(args).Build();
-                                var tray = host.Services.GetRequiredService<TrayIconManager>();
-                                var service = host.Services.GetRequiredService<CalendarSyncService>();
-		
-                                tray.ExitClicked += async (_, _) =>
-                                {
-                                                EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
-                                                await host.StopAsync();
-                                                tray.Dispose();
-                                                Application.Exit();
-                                };
+		tray.WipeIosCalendarClicked += async (_, _) =>
+		{
+			await service.WipeEntireCalendarAsync();
+		};
 
-                                tray.WipeIosCalendarClicked += async (_, _) =>
-                                {
-                                                await service.WipeEntireCalendarAsync();
-                                };
-		
-				host.StartAsync().GetAwaiter().GetResult();
-				Application.Run();
-				EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
-		}
+		host.StartAsync().GetAwaiter().GetResult();
+		Application.Run();
+		EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
+	}
 
-		public static IHostBuilder CreateHostBuilder(string[] args) =>
-				Host.CreateDefaultBuilder(args)
-						.ConfigureServices((hostContext, services) =>
+	public static IHostBuilder CreateHostBuilder(string[] args) =>
+			Host.CreateDefaultBuilder(args)
+					.ConfigureServices((hostContext, services) =>
+					{
+						var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+						if (!File.Exists(configPath))
 						{
-				
-								var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
-								if (!File.Exists(configPath))
-								{
-										EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
-										throw new FileNotFoundException("config.json not found in the executable directory.");
-								}
-                                var configJson = File.ReadAllText(configPath);
-                                var config = JsonConvert.DeserializeObject<SyncConfig>(configJson);
-                                if (string.IsNullOrWhiteSpace(config?.SourceId))
-                                {
-                                                config!.SourceId = Guid.NewGuid().ToString("N");
-                                                File.WriteAllText(configPath, JsonConvert.SerializeObject(config, Formatting.Indented));
-                                }
+							EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
+							throw new FileNotFoundException("config.json not found in the executable directory.");
+						}
+						var configJson = File.ReadAllText(configPath);
+						var config = JsonConvert.DeserializeObject<SyncConfig>(configJson);
+						if (string.IsNullOrWhiteSpace(config?.SourceId))
+						{
+							config!.SourceId = Guid.NewGuid().ToString("N");
+							File.WriteAllText(configPath, JsonConvert.SerializeObject(config, Formatting.Indented));
+						}
 
-				services.AddSingleton<SyncConfig>(config!);
-				services.AddSingleton<TrayIconManager>();
-				services.AddHostedService<CalendarSyncService>();
+						services.AddSingleton<SyncConfig>(config!);
+						services.AddSingleton<TrayIconManager>();
+						services.AddSingleton<CalendarSyncService>();
+						services.AddSingleton<IHostedService>(sp =>
+							sp.GetRequiredService<CalendarSyncService>());
 
-				LogEventLevel serilogLevel = LogEventLevel.Information;
-				if (!string.IsNullOrWhiteSpace(config!.LogLevel) &&
-					Enum.TryParse(config.LogLevel, true, out LogEventLevel parsedLevel))
-				{
-					serilogLevel = parsedLevel;
-				}
-				var logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sync.log");
+						LogEventLevel serilogLevel = LogEventLevel.Information;
+						if (!string.IsNullOrWhiteSpace(config!.LogLevel) &&
+								Enum.TryParse(config.LogLevel, true, out LogEventLevel parsedLevel))
+						{
+							serilogLevel = parsedLevel;
+						}
+						var logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sync.log");
 
-				var logger = new LoggerConfiguration()
-					.MinimumLevel.Is(serilogLevel)
-						.WriteTo.File(
-						logFilePath,
-						rollOnFileSizeLimit: true,
-						fileSizeLimitBytes: 1_048_576,
-						rollingInterval: RollingInterval.Infinite,
-						retainedFileCountLimit: 1, 
-						shared: true
-						)
-					.CreateLogger();
+						var logger = new LoggerConfiguration()
+								.MinimumLevel.Is(serilogLevel)
+									.WriteTo.File(
+									logFilePath,
+									rollOnFileSizeLimit: true,
+									fileSizeLimitBytes: 1_048_576,
+									rollingInterval: RollingInterval.Infinite,
+									retainedFileCountLimit: 1,
+									shared: true
+									)
+								.CreateLogger();
 
-								services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
-								EventRecorder.WriteEntry("Configuration loaded", EventLogEntryType.Information);
-						});
+						services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
+						EventRecorder.WriteEntry("Configuration loaded", EventLogEntryType.Information);
+					});
 
-		private static void SubscribeToGlobalExceptions()
+	private static void SubscribeToGlobalExceptions()
+	{
+		AppDomain.CurrentDomain.UnhandledException += (_, e) => HandleGlobalException(e.ExceptionObject as Exception);
+		TaskScheduler.UnobservedTaskException += (_, e) =>
 		{
-				AppDomain.CurrentDomain.UnhandledException += (_, e) => HandleGlobalException(e.ExceptionObject as Exception);
-				TaskScheduler.UnobservedTaskException += (_, e) =>
-				{
-						HandleGlobalException(e.Exception);
-						e.SetObserved();
-				};
-				Application.ThreadException += (_, e) => HandleGlobalException(e.Exception);
-		}
+			HandleGlobalException(e.Exception);
+			e.SetObserved();
+		};
+		Application.ThreadException += (_, e) => HandleGlobalException(e.Exception);
+	}
 
-		private static void HandleGlobalException(Exception? ex)
+	private static void HandleGlobalException(Exception? ex)
+	{
+		if (ex == null)
+			return;
+		try
 		{
-				if (ex == null)
-						return;
-				try
-				{
-						Log.Fatal(ex, "Unhandled exception");
-				}
-				catch { }
-				EventRecorder.WriteEntry(ex.ToString(), EventLogEntryType.Error);
+			Log.Fatal(ex, "Unhandled exception");
 		}
+		catch { }
+		EventRecorder.WriteEntry(ex.ToString(), EventLogEntryType.Error);
+	}
 }
