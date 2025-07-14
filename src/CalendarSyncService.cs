@@ -457,15 +457,31 @@ public class CalendarSyncService : BackgroundService
 		if (!string.IsNullOrEmpty(_tag))
 			summary = $"[{_tag}] {summary}";
 
-		var calEvent = new CalendarEvent
-		{
-			Summary = summary,
-			Start = new CalDateTime(appt.Start.ToUniversalTime()),
-			End = new CalDateTime(appt.End.ToUniversalTime()),
-			Location = appt.Location ?? "",
-			Uid = uid,
-			Description = appt.Body ?? ""
-		};
+                CalDateTime start;
+                CalDateTime end;
+
+                // Full-day events (00:00 - 23:59) should be encoded as DATE values
+                var span = appt.End - appt.Start;
+                if (appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 && appt.End.TimeOfDay >= new TimeSpan(23, 59, 0))
+                {
+                        start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
+                        end = new CalDateTime(appt.End.Date.AddDays(1), tzId: null, hasTime: false);
+                }
+                else
+                {
+                        start = new CalDateTime(appt.Start.ToUniversalTime());
+                        end = new CalDateTime(appt.End.ToUniversalTime());
+                }
+
+                var calEvent = new CalendarEvent
+                {
+                        Summary = summary,
+                        Start = start,
+                        End = end,
+                        Location = appt.Location ?? "",
+                        Uid = uid,
+                        Description = appt.Body ?? ""
+                };
 
 		// Reminders
 		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
