@@ -278,10 +278,10 @@ public class CalendarSyncService : BackgroundService
 		}
 	}
 
-	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
-	{
-		var events = new Dictionary<string, OutlookEventDto>();
-		var expandedRecurringIds = new HashSet<string>();
+        private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
+        {
+                var events = new Dictionary<string, OutlookEventDto>();
+                var expandedRecurringIds = new HashSet<string>();
 
 		var syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
 		var syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
@@ -304,26 +304,55 @@ public class CalendarSyncService : BackgroundService
 					var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
 					_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
 
-					foreach (var (uid, start, end) in instances)
-					{
-						var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
-						events[$"{_sourceId}-{uid}"] = dto;
-					}
+                foreach (var (uid, start, end) in instances)
+                {
+                        var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
+                        AddEventChunks(events, uid, dto);
+                }
 					continue;
 				}
 
 				// Single non-recurring event
-				var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
-				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
-				events[$"{_sourceId}-{uid_}"] = dtoItem;
+                                var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+                                var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
+                                AddEventChunks(events, uid_, dtoItem);
 			}
 			catch (Exception ex)
 			{
 				_logger.LogWarning(ex, "Failed to process appointment.");
 			}
 		}
-		return events;
-	}
+
+                return events;
+        }
+
+        private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
+        {
+                var span = dto.End - dto.Start;
+                var isAllDay = dto.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+                        (dto.End.TimeOfDay == TimeSpan.Zero || dto.End.TimeOfDay >= new TimeSpan(23, 59, 0));
+
+                if (isAllDay)
+                {
+                        var endDate = dto.End.TimeOfDay == TimeSpan.Zero ? dto.End.Date : dto.End.Date.AddDays(1);
+                        var days = (endDate - dto.Start.Date).Days;
+
+                        if (days > 1)
+                        {
+                                for (var i = 0; i < days; i++)
+                                {
+                                        var dayStart = dto.Start.Date.AddDays(i);
+                                        var dayEnd = dayStart.AddDays(1);
+                                        var uid = $"{_sourceId}-{baseUid}-{dayStart:yyyyMMdd}";
+                                        var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStart, dayEnd, dto.GlobalId);
+                                        events[uid] = dayDto;
+                                }
+                                return;
+                        }
+                }
+
+                events[$"{_sourceId}-{baseUid}"] = dto;
+        }
 
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
@@ -460,12 +489,14 @@ public class CalendarSyncService : BackgroundService
                 CalDateTime start;
                 CalDateTime end;
 
-                // Full-day events (00:00 - 23:59) should be encoded as DATE values
+                // Convert 24h+ spans starting at midnight to all-day events
                 var span = appt.End - appt.Start;
-                if (appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 && appt.End.TimeOfDay >= new TimeSpan(23, 59, 0))
+                if (appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+                        (appt.End.TimeOfDay == TimeSpan.Zero || appt.End.TimeOfDay >= new TimeSpan(23, 59, 0)))
                 {
                         start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
-                        end = new CalDateTime(appt.End.Date.AddDays(1), tzId: null, hasTime: false);
+                        var endDate = appt.End.TimeOfDay == TimeSpan.Zero ? appt.End.Date : appt.End.Date.AddDays(1);
+                        end = new CalDateTime(endDate, tzId: null, hasTime: false);
                 }
                 else
                 {
