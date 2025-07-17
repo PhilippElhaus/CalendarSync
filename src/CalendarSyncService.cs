@@ -491,8 +491,10 @@ public class CalendarSyncService : BackgroundService
 
                 // Convert 24h+ spans starting at midnight to all-day events
                 var span = appt.End - appt.Start;
-                if (appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-                        (appt.End.TimeOfDay == TimeSpan.Zero || appt.End.TimeOfDay >= new TimeSpan(23, 59, 0)))
+                var isAllDay = appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+                        (appt.End.TimeOfDay == TimeSpan.Zero || appt.End.TimeOfDay >= new TimeSpan(23, 59, 0));
+
+                if (isAllDay)
                 {
                         start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
                         var endDate = appt.End.TimeOfDay == TimeSpan.Zero ? appt.End.Date : appt.End.Date.AddDays(1);
@@ -514,9 +516,12 @@ public class CalendarSyncService : BackgroundService
                         Description = appt.Body ?? ""
                 };
 
-		// Reminders
-		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
-		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
+                // Reminders
+                if (!isAllDay)
+                {
+                        calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
+                        calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
+                }
 
 		return calEvent;
 	}
