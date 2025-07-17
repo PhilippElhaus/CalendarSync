@@ -9,7 +9,7 @@ As a COM-Interop application it is optimized to run silently via a Scheduled Tas
 ## Features
 
 - One-Way syncs events from **local Outlook calendar** to **Apple iCloud calendar**
-- Adds a **10-minute** and **3-minute alarm notification** for every synced event
+- Adds a **10-minute** and **3-minute alarm notification** for timed events (no reminders on all-day or multi-day entries)
 - Runs silently and logs to `sync.log`
 - Designed for **restricted corporate environments** — no UI required
 - Tray icon with status tooltip
