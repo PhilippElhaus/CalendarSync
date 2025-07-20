@@ -1,4 +1,5 @@
-﻿![CalendarSync Illustrations](illustration.png "Calendar Sync")
+﻿![CalendarSync Illustration 1](illustration.png "Calendar Sync")
+
 
 
 # CalendarSync
@@ -13,7 +14,12 @@ As a COM-Interop application it is optimized to run silently via a Scheduled Tas
 - Runs silently and logs to `sync.log`
 - Designed for **restricted corporate environments** — no UI required
 - Tray icon with status tooltip
-- Ability to sync multiple source calendars into the target.
+- Ability to sync multiple source calendars into the target:
+    1. Ideal for multiple machines handed out by the consultancy and client
+    2. Cleanly separates and manages multiple sources
+    3. Ability to visually 'tag' entries from sources
+
+![CalendarSync Illustration 2](illustration_multiple.png "Calendar Sync")
 
 ## Requirements
 

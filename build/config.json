@@ -1,0 +1,14 @@
+{
+	"ICloudCalDavUrl": "https://caldav.icloud.com",
+	"ICloudUser": "user@email.com",
+	"ICloudPassword": "xxxx-yyyy-zzzz-aaaa",
+	"PrincipalId": "1234567890",
+	"WorkCalendarId": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+	"InitialWaitSeconds": 30,
+	"SyncIntervalMinutes": 3,
+	"SyncDaysIntoFuture": 30,
+	"SyncDaysIntoPast": 30,
+	"LogLevel": "Information",
+	"SourceId": "",
+	"EventTag": ""
+}
