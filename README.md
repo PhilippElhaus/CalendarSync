@@ -88,6 +88,11 @@ High level events are also written to the Windows Event Log under the
 - Does not store or sync from iCloud to Outlook
 - Passwords handled via basic auth over HTTPS
 
+## Outlook COM Reliability
+
+- Uses a dedicated STA thread with timeouts to prevent Outlook UI hangs.
+- Sign the executable and allow Programmatic Access via Group Policy or antivirus to remove repeated security prompts.
+
 ## Notes
 
 - Outlook must be configured and ready on the host
