@@ -91,7 +91,6 @@ High level events are also written to the Windows Event Log under the
 ## Outlook COM Reliability
 
 - Uses a dedicated STA thread with timeouts to prevent Outlook UI hangs.
-- Sign the executable and allow Programmatic Access via Group Policy or antivirus to remove repeated security prompts.
 
 ## Notes
 
