@@ -83,19 +83,63 @@ public class CalendarSyncService : BackgroundService
 		_tray.SetUpdating();
 		_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
 
+		try
+		{
+		var outlookEvents = await FetchOutlookEventsAsync(stoppingToken);
+
+		using var client = CreateHttpClient();
+		var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+
+		if (_isFirstRun)
+		{
+				_logger.LogInformation("First run detected, initiating wipe.");
+				await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken, true);
+				_isFirstRun = false;
+				_tray.SetUpdating();
+		}
+
+		await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
+
+		EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
+		}
+		catch (OperationCanceledException)
+		{
+		_logger.LogError("Outlook operation timed out.");
+		EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
+		}
+		catch (Exception ex)
+		{
+		_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
+		}
+		finally
+		{
+		_tray.SetIdle();
+		}
+
+		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
+	}
+
+	private Task<Dictionary<string, OutlookEventDto>> FetchOutlookEventsAsync(CancellationToken token)
+	{
+		var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+		cts.CancelAfter(TimeSpan.FromMinutes(2));
+
+		return StaTask.Run(() =>
+		{
 		Outlook.Application outlookApp = null;
 		Outlook.NameSpace outlookNs = null;
 		Outlook.MAPIFolder calendar = null;
 		Outlook.Items items = null;
 
-		var retryCount = 0;
-		const int maxRetries = 5;
-		var connected = false;
-
-		while (retryCount < maxRetries && !connected && !stoppingToken.IsCancellationRequested)
+		try
 		{
-			try
-			{
+				var retryCount = 0;
+				const int maxRetries = 5;
+
+				while (retryCount < maxRetries && !cts.Token.IsCancellationRequested)
+				{
+				try
+				{
 				_logger.LogDebug("Attempting to create Outlook.Application instance.");
 				outlookApp = new Outlook.Application();
 				_logger.LogDebug("Getting Outlook namespace.");
@@ -105,112 +149,83 @@ public class CalendarSyncService : BackgroundService
 				_logger.LogDebug("Retrieving calendar items.");
 				items = calendar.Items;
 				_logger.LogInformation("Successfully connected to Outlook.");
-				connected = true;
-			}
-			catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
-			{
+				break;
+				}
+				catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
+				{
 				retryCount++;
 				_logger.LogWarning(ex, $"Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {retryCount}/{maxRetries}.");
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
 				if (retryCount == maxRetries)
-				{
-					_logger.LogError("Max retries reached for Outlook connection. Skipping this sync cycle.");
-					EventRecorder.WriteEntry("Outlook connection failed", EventLogEntryType.Error);
-					return;
-				}
+							throw;
 				_logger.LogDebug("Waiting 10 seconds before retry.");
-				await Task.Delay(10000, stoppingToken);
-			}
-			catch (Exception ex)
-			{
+				Task.Delay(10000, cts.Token).Wait(cts.Token);
+				}
+				catch (Exception ex)
+				{
 				retryCount++;
 				_logger.LogWarning(ex, "Unexpected error connecting to Outlook, retry {Retry}/{MaxRetries}.", retryCount, maxRetries);
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
 				if (retryCount == maxRetries)
-				{
-					_logger.LogError("Max retries reached for Outlook connection. Skipping this sync cycle.");
-					EventRecorder.WriteEntry("Outlook connection failed", EventLogEntryType.Error);
-					return;
-				}
+							throw;
 				_logger.LogDebug("Waiting 10 seconds before retry.");
-				await Task.Delay(10000, stoppingToken);
-			}
-		}
+				Task.Delay(10000, cts.Token).Wait(cts.Token);
+				}
+				}
 
-		if (!connected)
-		{
-			_logger.LogDebug("No connection established, exiting PerformSyncAsync.");
-			return;
-		}
+				if (items == null)
+				{
+				_logger.LogDebug("No connection established, exiting FetchOutlookEventsAsync.");
+				return new Dictionary<string, OutlookEventDto>();
+				}
 
-		try
-		{
-			items.IncludeRecurrences = true;
-			items.Sort("[Start]");
+				items.IncludeRecurrences = true;
+				items.Sort("[Start]");
 
-			var start = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
-			var end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
+				var start = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
+				var end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
-			var filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
-			items = items.Restrict(filter);
+				var filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
+				items = items.Restrict(filter);
 
-			_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
+				_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
 
-			var allItems = new List<Outlook.AppointmentItem>();
-			var count = 0;
+				var allItems = new List<Outlook.AppointmentItem>();
+				var count = 0;
 
-			foreach (var item in items)
-			{
+				foreach (var item in items)
+				{
 				if (count++ > 5000)
 				{
-					_logger.LogWarning("Aborting calendar item scan after 1000 items to prevent hangs.");
-					break;
+				_logger.LogWarning("Aborting calendar item scan after 1000 items to prevent hangs.");
+				break;
 				}
 
 				try
 				{
-					if (item is Outlook.AppointmentItem appt)
-						allItems.Add(appt);
+				if (item is Outlook.AppointmentItem appt)
+							allItems.Add(appt);
 				}
 				catch (Exception ex)
 				{
-					_logger.LogDebug(ex, "Skipping calendar item due to exception.");
+				_logger.LogDebug(ex, "Skipping calendar item due to exception.");
 				}
-			}
+				}
 
-			_logger.LogInformation("Collected {Count} Outlook items after manual date filter.", allItems.Count);
+				_logger.LogInformation("Collected {Count} Outlook items after manual date filter.", allItems.Count);
 
-			var outlookEvents = GetOutlookEventsFromList(allItems);
+				var outlookEvents = GetOutlookEventsFromList(allItems);
 
-			_logger.LogInformation("Expanded to {Count} atomic Outlook events.", outlookEvents.Count);
+				_logger.LogInformation("Expanded to {Count} atomic Outlook events.", outlookEvents.Count);
 
-			using var client = CreateHttpClient();
-			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
-
-			if (_isFirstRun)
-			{
-				_logger.LogInformation("First run detected, initiating wipe.");
-				await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken, true);
-				_isFirstRun = false;
-				_tray.SetUpdating();
-			}
-
-			await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
-
-			EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
-		}
-		catch (Exception ex)
-		{
-			_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
+				return outlookEvents;
 		}
 		finally
 		{
-			_logger.LogDebug("Cleaning up Outlook COM objects.");
-			CleanupOutlook(outlookApp, outlookNs, calendar, items);
-			_tray.SetIdle();
+				_logger.LogDebug("Cleaning up Outlook COM objects.");
+				CleanupOutlook(outlookApp, outlookNs, calendar, items);
 		}
-
-		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
+		}, cts.Token);
 	}
 
 	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token, bool filterBySource)
@@ -278,81 +293,89 @@ public class CalendarSyncService : BackgroundService
 		}
 	}
 
-        private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
-        {
-                var events = new Dictionary<string, OutlookEventDto>();
-                var expandedRecurringIds = new HashSet<string>();
+	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
+	{
+		var events = new Dictionary<string, OutlookEventDto>();
+		var expandedRecurringIds = new HashSet<string>();
 
 		var syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
 		var syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
 
 		foreach (var appt in appts)
 		{
-			try
-			{
+		try
+		{
 				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
-					continue;
+				continue;
 
 				if (appt.IsRecurring)
 				{
-					var globalId = appt.GlobalAppointmentID;
-					if (expandedRecurringIds.Contains(globalId))
-						continue;
+				var globalId = appt.GlobalAppointmentID;
+				if (expandedRecurringIds.Contains(globalId))
+				continue;
 
-					expandedRecurringIds.Add(globalId);
+				expandedRecurringIds.Add(globalId);
 
-					var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
-					_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
+				var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
+				_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
 
-                foreach (var (uid, start, end) in instances)
-                {
-                        var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
-                        AddEventChunks(events, uid, dto);
-                }
-					continue;
+				foreach (var (uid, start, end) in instances)
+				{
+				var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
+				AddEventChunks(events, uid, dto);
+				}
+				continue;
 				}
 
 				// Single non-recurring event
-                                var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
-                                var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
-                                AddEventChunks(events, uid_, dtoItem);
-			}
-			catch (Exception ex)
-			{
+				var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
+				AddEventChunks(events, uid_, dtoItem);
+		}
+		catch (Exception ex)
+		{
 				_logger.LogWarning(ex, "Failed to process appointment.");
-			}
+		}
+		finally
+		{
+				try
+				{
+				Marshal.FinalReleaseComObject(appt);
+				}
+				catch { }
+		}
 		}
 
-                return events;
-        }
+		return events;
+	}
 
-        private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
-        {
-                var span = dto.End - dto.Start;
-                var isAllDay = dto.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-                        (dto.End.TimeOfDay == TimeSpan.Zero || dto.End.TimeOfDay >= new TimeSpan(23, 59, 0));
+	private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
+	{
+		var span = dto.End - dto.Start;
+		var isAllDay = dto.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+		(dto.End.TimeOfDay == TimeSpan.Zero || dto.End.TimeOfDay >= new TimeSpan(23, 59, 0));
 
-                if (isAllDay)
-                {
-                        var endDate = dto.End.TimeOfDay == TimeSpan.Zero ? dto.End.Date : dto.End.Date.AddDays(1);
-                        var days = (endDate - dto.Start.Date).Days;
+		if (isAllDay)
+		{
+		var endDate = dto.End.TimeOfDay == TimeSpan.Zero ? dto.End.Date : dto.End.Date.AddDays(1);
+		var days = (endDate - dto.Start.Date).Days;
 
-                        if (days > 1)
-                        {
-                                for (var i = 0; i < days; i++)
-                                {
-                                        var dayStart = dto.Start.Date.AddDays(i);
-                                        var dayEnd = dayStart.AddDays(1);
-                                        var uid = $"{_sourceId}-{baseUid}-{dayStart:yyyyMMdd}";
-                                        var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStart, dayEnd, dto.GlobalId);
-                                        events[uid] = dayDto;
-                                }
-                                return;
-                        }
-                }
+		if (days > 1)
+		{
+				for (var i = 0; i < days; i++)
+				{
+				var dayStart = dto.Start.Date.AddDays(i);
+				var dayEnd = dayStart.AddDays(1);
+				var uid = $"{_sourceId}-{baseUid}-{dayStart:yyyyMMdd}";
+				var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStart, dayEnd, dto.GlobalId);
+				events[uid] = dayDto;
+				}
+				return;
+		}
+		}
 
-                events[$"{_sourceId}-{baseUid}"] = dto;
-        }
+		events[$"{_sourceId}-{baseUid}"] = dto;
+	}
 
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
@@ -433,11 +456,11 @@ public class CalendarSyncService : BackgroundService
 		{
 			Content = new StringContent(
 				@"<?xml version=""1.0"" encoding=""utf-8"" ?>
-            <d:propfind xmlns:d=""DAV:"" xmlns:c=""urn:ietf:params:xml:ns:caldav"">
-                <d:prop>
-                    <d:getetag />
-                </d:prop>
-            </d:propfind>",
+	<d:propfind xmlns:d=""DAV:"" xmlns:c=""urn:ietf:params:xml:ns:caldav"">
+		<d:prop>
+		<d:getetag />
+		</d:prop>
+	</d:propfind>",
 				Encoding.UTF8, "application/xml")
 		};
 		request.Headers.Add("Depth", "1");
@@ -459,8 +482,8 @@ public class CalendarSyncService : BackgroundService
 			var doc = XDocument.Parse(content);
 			XNamespace dav = "DAV:";
 			var hrefs = doc.Descendants(dav + "href")
-						   .Where(h => h.Value.EndsWith(".ics"))
-						   .Select(h => h.Value.Split('/').Last().Replace(".ics", ""));
+						.Where(h => h.Value.EndsWith(".ics"))
+						.Select(h => h.Value.Split('/').Last().Replace(".ics", ""));
 
 			foreach (var uid in hrefs)
 			{
@@ -486,42 +509,42 @@ public class CalendarSyncService : BackgroundService
 		if (!string.IsNullOrEmpty(_tag))
 			summary = $"[{_tag}] {summary}";
 
-                CalDateTime start;
-                CalDateTime end;
+		CalDateTime start;
+		CalDateTime end;
 
-                // Convert 24h+ spans starting at midnight to all-day events
-                var span = appt.End - appt.Start;
-                var isAllDay = appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-                        (appt.End.TimeOfDay == TimeSpan.Zero || appt.End.TimeOfDay >= new TimeSpan(23, 59, 0));
+		// Convert 24h+ spans starting at midnight to all-day events
+		var span = appt.End - appt.Start;
+		var isAllDay = appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+		(appt.End.TimeOfDay == TimeSpan.Zero || appt.End.TimeOfDay >= new TimeSpan(23, 59, 0));
 
-                if (isAllDay)
-                {
-                        start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
-                        var endDate = appt.End.TimeOfDay == TimeSpan.Zero ? appt.End.Date : appt.End.Date.AddDays(1);
-                        end = new CalDateTime(endDate, tzId: null, hasTime: false);
-                }
-                else
-                {
-                        start = new CalDateTime(appt.Start.ToUniversalTime());
-                        end = new CalDateTime(appt.End.ToUniversalTime());
-                }
+		if (isAllDay)
+		{
+		start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
+		var endDate = appt.End.TimeOfDay == TimeSpan.Zero ? appt.End.Date : appt.End.Date.AddDays(1);
+		end = new CalDateTime(endDate, tzId: null, hasTime: false);
+		}
+		else
+		{
+		start = new CalDateTime(appt.Start.ToUniversalTime());
+		end = new CalDateTime(appt.End.ToUniversalTime());
+		}
 
-                var calEvent = new CalendarEvent
-                {
-                        Summary = summary,
-                        Start = start,
-                        End = end,
-                        Location = appt.Location ?? "",
-                        Uid = uid,
-                        Description = appt.Body ?? ""
-                };
+		var calEvent = new CalendarEvent
+		{
+		Summary = summary,
+		Start = start,
+		End = end,
+		Location = appt.Location ?? "",
+		Uid = uid,
+		Description = appt.Body ?? ""
+		};
 
-                // Reminders
-                if (!isAllDay)
-                {
-                        calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
-                        calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
-                }
+		// Reminders
+		if (!isAllDay)
+		{
+		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
+		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
+		}
 
 		return calEvent;
 	}
@@ -675,18 +698,18 @@ public class CalendarSyncService : BackgroundService
 	{
 		try
 		{
-			if (items != null)
-				Marshal.ReleaseComObject(items);
-			if (folder != null)
-				Marshal.ReleaseComObject(folder);
-			if (ns != null)
-				Marshal.ReleaseComObject(ns);
-			if (app != null)
-				Marshal.ReleaseComObject(app);
+		if (items != null)
+				Marshal.FinalReleaseComObject(items);
+		if (folder != null)
+				Marshal.FinalReleaseComObject(folder);
+		if (ns != null)
+				Marshal.FinalReleaseComObject(ns);
+		if (app != null)
+				Marshal.FinalReleaseComObject(app);
 		}
 		catch
 		{
-			_logger.LogError("Unable to clean up Outlook COM objects.");
+		_logger.LogError("Unable to clean up Outlook COM objects.");
 		}
 	}
 }
