@@ -10,6 +10,7 @@ using System.Text;
 using System.Xml.Linq;
 using System.Windows.Forms;
 using Outlook = Microsoft.Office.Interop.Outlook;
+using System.Net;
 
 namespace CalendarSync.src;
 
