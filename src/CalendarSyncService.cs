@@ -8,12 +8,14 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Linq;
+using System.Windows.Forms;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync.src;
 
 public class CalendarSyncService : BackgroundService
-{
+		{
+
 	private record OutlookEventDto(
 	string Subject,
 	string Body,
@@ -100,17 +102,23 @@ public class CalendarSyncService : BackgroundService
 
 		await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
 
-		EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
-		}
+			EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
+}
+		catch (UnauthorizedAccessException ex)
+{
+			_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
+			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
+			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+}
 		catch (OperationCanceledException)
-		{
-		_logger.LogError("Outlook operation timed out.");
-		EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
-		}
+{
+			_logger.LogError("Outlook operation timed out.");
+			EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
+}
 		catch (Exception ex)
-		{
-		_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
-		}
+{
+			_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
+}
 		finally
 		{
 		_tray.SetIdle();
@@ -253,16 +261,21 @@ public class CalendarSyncService : BackgroundService
 			await Task.Delay(300, token);
 			try
 			{
+
 				var deleteResponse = await client.SendAsync(deleteRequest);
 				if (deleteResponse.IsSuccessStatusCode)
 					_logger.LogInformation("Deleted iCloud event with UID {Uid}", iCloudUid);
 				else
 				{
+
+					if (deleteResponse.StatusCode == HttpStatusCode.Unauthorized || deleteResponse.StatusCode == HttpStatusCode.Forbidden)
+						throw new UnauthorizedAccessException("iCloud authentication failed.");
 					_logger.LogWarning("Failed to delete iCloud event UID {Uid}: {Status} - {Reason}", iCloudUid, deleteResponse.StatusCode, deleteResponse.ReasonPhrase);
 				}
 			}
 			catch (Exception ex)
 			{
+
 				_logger.LogError(ex, "Exception while deleting iCloud event UID {Uid}", iCloudUid);
 				await Task.Delay(5000, token);
 			}
@@ -286,6 +299,12 @@ public class CalendarSyncService : BackgroundService
 			using var client = CreateHttpClient();
 			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 			await WipeICloudCalendarAsync(client, calendarUrl, token, false);
+		}
+		catch (UnauthorizedAccessException ex)
+		{
+			_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
+			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
+			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
 		}
 		finally
 		{
@@ -414,8 +433,10 @@ public class CalendarSyncService : BackgroundService
 				_logger.LogInformation("Synced event '{Subject}'", dto.Subject);
 			else
 			{
+				if (responsePut.StatusCode == HttpStatusCode.Unauthorized || responsePut.StatusCode == HttpStatusCode.Forbidden)
+					throw new UnauthorizedAccessException("iCloud authentication failed.");
 				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}",
-						dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
+								dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
 				await RetryRequestAsync(client, requestPut, token);
 			}
 		}
@@ -443,7 +464,11 @@ public class CalendarSyncService : BackgroundService
 			if (response.IsSuccessStatusCode)
 				_logger.LogInformation("Deleted orphaned iCloud event UID {Uid}", uid);
 			else
+			{
+				if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
+					throw new UnauthorizedAccessException("iCloud authentication failed.");
 				_logger.LogWarning("Failed to delete orphaned iCloud event UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
+			}
 		}
 
 		if (delTotal > 0)
@@ -470,9 +495,11 @@ public class CalendarSyncService : BackgroundService
 		var content = await response.Content.ReadAsStringAsync();
 
 		if (!response.IsSuccessStatusCode)
-		{
+{
 			_logger.LogWarning("Failed to fetch iCloud events: {Status} - {Reason}", response.StatusCode, response.ReasonPhrase);
 			EventRecorder.WriteEntry("iCloud fetch failed", EventLogEntryType.Error);
+			if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
+				throw new UnauthorizedAccessException("iCloud authentication failed.");
 			return new Dictionary<string, string>();
 		}
 
