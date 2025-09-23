@@ -674,10 +674,111 @@ public class CalendarSyncService : BackgroundService
 				rule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
 		}
 
+		var apptIsMaster = false;
+		try
+		{
+			apptIsMaster = appt.RecurrenceState == Outlook.OlRecurrenceState.olApptMaster;
+		}
+		catch (COMException)
+		{
+		}
+
+		DateTime? masterStart = null;
+		DateTime? masterEnd = null;
+		Outlook.AppointmentItem? master = null;
+		var releaseMaster = false;
+
+		if (!apptIsMaster)
+		{
+			try
+			{
+				master = pattern.Parent as Outlook.AppointmentItem;
+				if (master != null && !ReferenceEquals(master, appt))
+				{
+					releaseMaster = true;
+					try
+					{
+						masterStart = master.Start;
+						masterEnd = master.End;
+					}
+					catch (COMException)
+					{
+						masterStart = null;
+						masterEnd = null;
+					}
+				}
+				else if (master != null)
+				{
+					masterStart = appt.Start;
+					masterEnd = appt.End;
+				}
+			}
+			catch (COMException)
+			{
+			}
+			finally
+			{
+				if (releaseMaster && master != null)
+				{
+					try
+					{
+						Marshal.ReleaseComObject(master);
+					}
+					catch
+					{
+					}
+				}
+			}
+		}
+
+		var seriesStart = pattern.StartTime != DateTime.MinValue
+			? pattern.StartTime
+			: masterStart ?? appt.Start;
+
+		var baseDuration = TimeSpan.Zero;
+		if (pattern.StartTime != DateTime.MinValue && pattern.EndTime != DateTime.MinValue)
+		{
+			var candidate = pattern.EndTime - pattern.StartTime;
+			if (candidate > TimeSpan.Zero)
+				baseDuration = candidate;
+		}
+
+		if (baseDuration <= TimeSpan.Zero && masterStart.HasValue && masterEnd.HasValue)
+		{
+			var candidate = masterEnd.Value - masterStart.Value;
+			if (candidate > TimeSpan.Zero)
+			{
+				if (pattern.StartTime == DateTime.MinValue)
+					seriesStart = masterStart.Value;
+				baseDuration = candidate;
+			}
+		}
+
+		if (baseDuration <= TimeSpan.Zero && apptIsMaster)
+		{
+			var candidate = appt.End - appt.Start;
+			if (candidate > TimeSpan.Zero)
+			{
+				seriesStart = appt.Start;
+				baseDuration = candidate;
+			}
+		}
+
+		if (baseDuration <= TimeSpan.Zero)
+		{
+			var candidate = appt.End - appt.Start;
+			if (candidate > TimeSpan.Zero)
+				baseDuration = candidate;
+		}
+
+		if (seriesStart == DateTime.MinValue)
+			seriesStart = appt.Start;
+
+		var seriesEnd = seriesStart.Add(baseDuration);
 		var calEvent = new CalendarEvent
 		{
-			Start = new CalDateTime(appt.Start.ToUniversalTime()),
-			End = new CalDateTime(appt.End.ToUniversalTime()),
+			Start = new CalDateTime(seriesStart.ToUniversalTime()),
+			End = new CalDateTime(seriesEnd.ToUniversalTime()),
 			RecurrenceRules = new List<RecurrencePattern> { rule }
 		};
 
@@ -714,7 +815,7 @@ public class CalendarSyncService : BackgroundService
 			if (skipDates.Contains(start.Date))
 				continue;
 
-			var end = start.Add(appt.End - appt.Start);
+			var end = start.Add(baseDuration);
 			var uid = $"outlook-{appt.GlobalAppointmentID}-{start:yyyyMMddTHHmmss}";
 			results.Add((uid, start, end));
 		}
