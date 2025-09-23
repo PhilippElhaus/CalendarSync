@@ -404,12 +404,54 @@ public class CalendarSyncService : BackgroundService
 
 		_logger.LogInformation("Found {Count} iCloud events before sync.", iCloudEvents.Count);
 
-		_tray.SetUpdating();
+		var desiredUids = new HashSet<string>(outlookEvents.Keys, StringComparer.OrdinalIgnoreCase);
+		var staleUids = iCloudEvents.Keys.Where(uid => IsManagedUid(uid) && !desiredUids.Contains(uid)).ToList();
+
+		if (staleUids.Count > 0)
+		{
+			_logger.LogInformation("Deleting {Count} stale iCloud events before applying updates.", staleUids.Count);
+			_tray.SetDeleting();
+			var delTotal = staleUids.Count;
+			var delDone = 0;
+
+			foreach (var uid in staleUids)
+			{
+				token.ThrowIfCancellationRequested();
+
+				delDone++;
+				_tray.UpdateText($"Deleting... {delDone}/{delTotal} ({delDone * 100 / delTotal}%)");
+
+				var deleteUrl = $"{calendarUrl}{uid}.ics";
+				var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, deleteUrl);
+				var deleteResponse = await client.SendAsync(deleteRequest, token);
+
+				if (deleteResponse.IsSuccessStatusCode)
+				{
+					_logger.LogInformation("Deleted stale iCloud event UID {Uid}", uid);
+				}
+				else
+				{
+					if (deleteResponse.StatusCode == HttpStatusCode.Unauthorized || deleteResponse.StatusCode == HttpStatusCode.Forbidden)
+						throw new UnauthorizedAccessException("iCloud authentication failed.");
+					_logger.LogWarning("Failed to delete stale iCloud event UID {Uid}: {Status} - {Reason}", uid, deleteResponse.StatusCode, deleteResponse.ReasonPhrase);
+					await RetryRequestAsync(client, deleteRequest, token);
+				}
+			}
+
+			_tray.SetUpdating();
+		}
+		else
+		{
+			_logger.LogInformation("No stale iCloud events detected prior to sync.");
+			_tray.SetUpdating();
+		}
+
 		var total = outlookEvents.Count;
 		var done = 0;
 
 		foreach (var (uid, dto) in outlookEvents)
 		{
+			token.ThrowIfCancellationRequested();
 			if (dto == null)
 				continue;
 
@@ -429,7 +471,7 @@ public class CalendarSyncService : BackgroundService
 				Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
 			};
 
-			var responsePut = await client.SendAsync(requestPut);
+			var responsePut = await client.SendAsync(requestPut, token);
 			if (responsePut.IsSuccessStatusCode)
 				_logger.LogInformation("Synced event '{Subject}'", dto.Subject);
 			else
@@ -444,36 +486,6 @@ public class CalendarSyncService : BackgroundService
 
 		if (total > 0)
 			_tray.UpdateText($"Updating... {total}/{total} (100%)");
-
-		var toDelete = iCloudEvents.Keys.Where(u => !outlookEvents.ContainsKey(u)).ToList();
-		var delTotal = toDelete.Count;
-		var delDone = 0;
-
-		foreach (var uid in toDelete)
-		{
-			if (delDone == 0 && delTotal > 0)
-				_tray.SetDeleting();
-
-			delDone++;
-			if (delTotal > 0)
-				_tray.UpdateText($"Deleting... {delDone}/{delTotal} ({delDone * 100 / delTotal}%)");
-
-			var eventUrl = $"{calendarUrl}{uid}.ics";
-			var request = new HttpRequestMessage(HttpMethod.Delete, eventUrl);
-			var response = await client.SendAsync(request);
-
-			if (response.IsSuccessStatusCode)
-				_logger.LogInformation("Deleted orphaned iCloud event UID {Uid}", uid);
-			else
-			{
-				if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
-					throw new UnauthorizedAccessException("iCloud authentication failed.");
-				_logger.LogWarning("Failed to delete orphaned iCloud event UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
-			}
-		}
-
-		if (delTotal > 0)
-			_tray.UpdateText($"Deleting... {delTotal}/{delTotal} (100%)");
 	}
 
 	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl, bool filterBySource)
@@ -515,8 +527,11 @@ public class CalendarSyncService : BackgroundService
 
 			foreach (var uid in hrefs)
 			{
-				if (filterBySource && !string.IsNullOrEmpty(_sourceId) && !uid.StartsWith(_sourceId + "-"))
+				if (filterBySource && !IsManagedUid(uid))
+				{
+					_logger.LogDebug("Skipping non-managed iCloud event UID: {Uid}", uid);
 					continue;
+				}
 				events[uid] = "";
 				_logger.LogDebug("Found iCloud event UID: {Uid}", uid);
 			}
@@ -586,6 +601,26 @@ public class CalendarSyncService : BackgroundService
 		return client;
 	}
 
+	private bool IsManagedUid(string? uid)
+	{
+		if (string.IsNullOrWhiteSpace(uid))
+			return false;
+
+		var normalized = uid.Trim();
+		var prefixes = string.IsNullOrEmpty(_sourceId)
+			? new[] { "-outlook-" }
+			: new[] { $"{_sourceId}-outlook-", "-outlook-" };
+
+		foreach (var prefix in prefixes)
+		{
+			if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+				return true;
+		}
+
+		return false;
+	}
+
+
 	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original, CancellationToken token)
 	{
 		await Task.Delay(5000, token);
@@ -597,7 +632,7 @@ public class CalendarSyncService : BackgroundService
 			request.Content = new StringContent(body, Encoding.UTF8, sc.Headers.ContentType?.MediaType ?? "text/plain");
 		}
 
-		var retryResponse = await client.SendAsync(request);
+		var retryResponse = await client.SendAsync(request, token);
 		if (!retryResponse.IsSuccessStatusCode)
 			_logger.LogError("Retry failed for {Method} {Url}: {Status} - {Reason}", original.Method, original.RequestUri, retryResponse.StatusCode, retryResponse.ReasonPhrase);
 	}
