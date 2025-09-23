@@ -4,6 +4,7 @@ using Ical.Net.DataTypes;
 using Ical.Net.Serialization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -607,9 +608,13 @@ public class CalendarSyncService : BackgroundService
 			return false;
 
 		var normalized = uid.Trim();
-		var prefixes = string.IsNullOrEmpty(_sourceId)
-			? new[] { "-outlook-" }
-			: new[] { $"{_sourceId}-outlook-", "-outlook-" };
+		var prefixes = new List<string>();
+
+		if (!string.IsNullOrEmpty(_sourceId))
+			prefixes.Add($"{_sourceId}-outlook-");
+
+		prefixes.Add("-outlook-");
+		prefixes.Add("outlook-");
 
 		foreach (var prefix in prefixes)
 		{
@@ -619,6 +624,7 @@ public class CalendarSyncService : BackgroundService
 
 		return false;
 	}
+
 
 
 	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original, CancellationToken token)
@@ -766,9 +772,30 @@ public class CalendarSyncService : BackgroundService
 			}
 		}
 
-		var seriesStart = pattern.StartTime != DateTime.MinValue
-			? pattern.StartTime
-			: masterStart ?? appt.Start;
+		DateTime? patternSeriesStart = null;
+		try
+		{
+			if (pattern.PatternStartDate != DateTime.MinValue)
+			{
+				var startDate = pattern.PatternStartDate.Date;
+				var timeOfDay = pattern.StartTime != DateTime.MinValue
+					? pattern.StartTime.TimeOfDay
+					: (masterStart ?? appt.Start).TimeOfDay;
+				patternSeriesStart = startDate.Add(timeOfDay);
+			}
+		}
+		catch (COMException)
+		{
+		}
+
+		var hasPatternSeriesStart = patternSeriesStart.HasValue;
+		if (hasPatternSeriesStart && patternSeriesStart.Value.Year < 1900)
+		{
+			hasPatternSeriesStart = false;
+			patternSeriesStart = null;
+		}
+
+		var seriesStart = patternSeriesStart ?? masterStart ?? appt.Start;
 
 		var baseDuration = TimeSpan.Zero;
 		if (pattern.StartTime != DateTime.MinValue && pattern.EndTime != DateTime.MinValue)
@@ -783,7 +810,7 @@ public class CalendarSyncService : BackgroundService
 			var candidate = masterEnd.Value - masterStart.Value;
 			if (candidate > TimeSpan.Zero)
 			{
-				if (pattern.StartTime == DateTime.MinValue)
+				if (!hasPatternSeriesStart)
 					seriesStart = masterStart.Value;
 				baseDuration = candidate;
 			}
@@ -794,7 +821,8 @@ public class CalendarSyncService : BackgroundService
 			var candidate = appt.End - appt.Start;
 			if (candidate > TimeSpan.Zero)
 			{
-				seriesStart = appt.Start;
+				if (!hasPatternSeriesStart)
+					seriesStart = appt.Start;
 				baseDuration = candidate;
 			}
 		}
@@ -806,7 +834,7 @@ public class CalendarSyncService : BackgroundService
 				baseDuration = candidate;
 		}
 
-		if (seriesStart == DateTime.MinValue)
+		if (seriesStart == DateTime.MinValue || seriesStart.Year < 1900)
 			seriesStart = appt.Start;
 
 		var seriesEnd = seriesStart.Add(baseDuration);
