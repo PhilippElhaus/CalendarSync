@@ -136,57 +136,73 @@ public class CalendarSyncService : BackgroundService
 
 		return StaTask.Run(() =>
 		{
-		Outlook.Application outlookApp = null;
-		Outlook.NameSpace outlookNs = null;
-		Outlook.MAPIFolder calendar = null;
-		Outlook.Items items = null;
+			Outlook.Application outlookApp = null;
+			Outlook.NameSpace outlookNs = null;
+			Outlook.MAPIFolder calendar = null;
+			Outlook.Items items = null;
 
-		try
-		{
+			try
+			{
 				var retryCount = 0;
 				const int maxRetries = 5;
 
 				while (retryCount < maxRetries && !cts.Token.IsCancellationRequested)
 				{
-				try
-				{
-				_logger.LogDebug("Attempting to create Outlook.Application instance.");
-				outlookApp = new Outlook.Application();
-				_logger.LogDebug("Getting Outlook namespace.");
-				outlookNs = outlookApp.GetNamespace("MAPI");
-				_logger.LogDebug("Accessing calendar folder.");
-				calendar = outlookNs.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
-				_logger.LogDebug("Retrieving calendar items.");
-				items = calendar.Items;
-				_logger.LogInformation("Successfully connected to Outlook.");
-				break;
-				}
-				catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
-				{
-				retryCount++;
-				_logger.LogWarning(ex, $"Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {retryCount}/{maxRetries}.");
-				CleanupOutlook(outlookApp, outlookNs, calendar, items);
-				if (retryCount == maxRetries)
-							throw;
-				_logger.LogDebug("Waiting 10 seconds before retry.");
-				Task.Delay(10000, cts.Token).Wait(cts.Token);
-				}
-				catch (Exception ex)
-				{
-				retryCount++;
-				_logger.LogWarning(ex, "Unexpected error connecting to Outlook, retry {Retry}/{MaxRetries}.", retryCount, maxRetries);
-				CleanupOutlook(outlookApp, outlookNs, calendar, items);
-				if (retryCount == maxRetries)
-							throw;
-				_logger.LogDebug("Waiting 10 seconds before retry.");
-				Task.Delay(10000, cts.Token).Wait(cts.Token);
-				}
+					try
+					{
+						cts.Token.ThrowIfCancellationRequested();
+						_logger.LogDebug("Attempting to create Outlook.Application instance.");
+						outlookApp = CreateOutlookApplication(cts.Token);
+						_logger.LogDebug("Getting Outlook namespace.");
+						outlookNs = outlookApp.GetNamespace("MAPI");
+						_logger.LogDebug("Accessing calendar folder.");
+						calendar = outlookNs.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
+						_logger.LogDebug("Retrieving calendar items.");
+						items = calendar.Items;
+						_logger.LogInformation("Successfully connected to Outlook.");
+						break;
+					}
+					catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
+					{
+						retryCount++;
+						_logger.LogWarning(ex, $"Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {retryCount}/{maxRetries}.");
+						CleanupOutlook(outlookApp, outlookNs, calendar, items);
+						outlookApp = null;
+						outlookNs = null;
+						calendar = null;
+						items = null;
+						if (retryCount == maxRetries)
+						throw;
+						EnsureOutlookProcessReady(cts.Token);
+						_logger.LogDebug("Waiting 10 seconds before retry.");
+						DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
+					}
+					catch (OperationCanceledException)
+					{
+						CleanupOutlook(outlookApp, outlookNs, calendar, items);
+						throw;
+					}
+					catch (Exception ex)
+					{
+						retryCount++;
+						_logger.LogWarning(ex, "Unexpected error connecting to Outlook, retry {Retry}/{MaxRetries}.", retryCount, maxRetries);
+						CleanupOutlook(outlookApp, outlookNs, calendar, items);
+						outlookApp = null;
+						outlookNs = null;
+						calendar = null;
+						items = null;
+						if (retryCount == maxRetries)
+						throw;
+						EnsureOutlookProcessReady(cts.Token);
+						_logger.LogDebug("Waiting 10 seconds before retry.");
+						DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
+					}
 				}
 
 				if (items == null)
 				{
-				_logger.LogDebug("No connection established, exiting FetchOutlookEventsAsync.");
-				return new Dictionary<string, OutlookEventDto>();
+					_logger.LogDebug("No connection established, exiting FetchOutlookEventsAsync.");
+					return new Dictionary<string, OutlookEventDto>();
 				}
 
 				items.IncludeRecurrences = true;
@@ -205,21 +221,21 @@ public class CalendarSyncService : BackgroundService
 
 				foreach (var item in items)
 				{
-				if (count++ > 5000)
-				{
-				_logger.LogWarning("Aborting calendar item scan after 1000 items to prevent hangs.");
-				break;
-				}
+					if (count++ > 5000)
+					{
+						_logger.LogWarning("Aborting calendar item scan after 1000 items to prevent hangs.");
+						break;
+					}
 
-				try
-				{
-				if (item is Outlook.AppointmentItem appt)
-							allItems.Add(appt);
-				}
-				catch (Exception ex)
-				{
-				_logger.LogDebug(ex, "Skipping calendar item due to exception.");
-				}
+					try
+					{
+						if (item is Outlook.AppointmentItem appt)
+						allItems.Add(appt);
+					}
+					catch (Exception ex)
+					{
+						_logger.LogDebug(ex, "Skipping calendar item due to exception.");
+					}
 				}
 
 				_logger.LogInformation("Collected {Count} Outlook items after manual date filter.", allItems.Count);
@@ -229,15 +245,14 @@ public class CalendarSyncService : BackgroundService
 				_logger.LogInformation("Expanded to {Count} atomic Outlook events.", outlookEvents.Count);
 
 				return outlookEvents;
-		}
-		finally
-		{
+			}
+			finally
+			{
 				_logger.LogDebug("Cleaning up Outlook COM objects.");
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
-		}
+			}
 		}, cts.Token);
 	}
-
 	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token, bool filterBySource)
 	{
 		if (filterBySource)
@@ -886,22 +901,105 @@ public class CalendarSyncService : BackgroundService
 		return results;
 	}
 
+	private Outlook.Application CreateOutlookApplication(CancellationToken token)
+	{
+	EnsureOutlookProcessReady(token);
+	var existing = TryGetRunningOutlookInstance();
+	if (existing != null)
+	{
+	_logger.LogDebug("Attached to running Outlook instance.");
+	return existing;
+	}
+
+	_logger.LogDebug("No running Outlook instance found, creating new Outlook.Application instance.");
+	return new Outlook.Application();
+	}
+
+	private Outlook.Application? TryGetRunningOutlookInstance()
+	{
+	try
+	{
+	return (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
+	}
+	catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3) || ex.HResult == unchecked((int)0x80040154))
+	{
+	return null;
+	}
+	catch (Exception ex)
+	{
+	_logger.LogDebug(ex, "Unable to attach to existing Outlook instance.");
+	return null;
+	}
+	}
+
+	private void EnsureOutlookProcessReady(CancellationToken token)
+	{
+		try
+		{
+			var processes = Process.GetProcessesByName("OUTLOOK");
+			if (processes.Length == 0)
+			{
+				_logger.LogWarning("Outlook process not detected. Attempting to start outlook.exe in background mode.");
+				var startInfo = new ProcessStartInfo("outlook.exe")
+				{
+					UseShellExecute = false,
+					Arguments = "/embedding",
+					WindowStyle = ProcessWindowStyle.Minimized
+				};
+				Process.Start(startInfo);
+			}
+
+			var wait = Stopwatch.StartNew();
+			while (Process.GetProcessesByName("OUTLOOK").Length == 0 && wait.Elapsed < TimeSpan.FromSeconds(30))
+			{
+				DelayWithCancellation(TimeSpan.FromSeconds(1), token);
+			}
+			if (wait.Elapsed < TimeSpan.FromSeconds(30))
+			{
+				DelayWithCancellation(TimeSpan.FromSeconds(2), token);
+			}
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			_logger.LogWarning(ex, "Failed to ensure Outlook process is running.");
+		}
+	}
+
+	private static void DelayWithCancellation(TimeSpan delay, CancellationToken token)
+	{
+	if (delay <= TimeSpan.Zero)
+	{
+	return;
+	}
+
+	var waitHandles = new[] { token.WaitHandle };
+	if (WaitHandle.WaitAny(waitHandles, delay) == WaitHandle.WaitTimeout)
+	{
+	return;
+	}
+
+	token.ThrowIfCancellationRequested();
+	}
 	private void CleanupOutlook(Outlook.Application app, Outlook.NameSpace ns, Outlook.MAPIFolder folder, Outlook.Items items)
 	{
 		try
 		{
-		if (items != null)
-				Marshal.FinalReleaseComObject(items);
-		if (folder != null)
-				Marshal.FinalReleaseComObject(folder);
-		if (ns != null)
-				Marshal.FinalReleaseComObject(ns);
-		if (app != null)
-				Marshal.FinalReleaseComObject(app);
+			if (items != null)
+			Marshal.FinalReleaseComObject(items);
+			if (folder != null)
+			Marshal.FinalReleaseComObject(folder);
+			if (ns != null)
+			Marshal.FinalReleaseComObject(ns);
+			if (app != null)
+			Marshal.FinalReleaseComObject(app);
 		}
 		catch
 		{
-		_logger.LogError("Unable to clean up Outlook COM objects.");
+			_logger.LogError("Unable to clean up Outlook COM objects.");
 		}
 	}
 }
