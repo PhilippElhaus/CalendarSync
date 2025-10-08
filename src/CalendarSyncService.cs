@@ -901,53 +901,36 @@ public class CalendarSyncService : BackgroundService
 		return results;
 	}
 
-		private Outlook.Application CreateOutlookApplication(CancellationToken token)
+	private Outlook.Application CreateOutlookApplication(CancellationToken token)
 	{
-		EnsureOutlookProcessReady(token);
-		var existing = TryGetRunningOutlookInstance();
-		if (existing != null)
-		{
-			_logger.LogDebug("Attached to running Outlook instance.");
-			return existing;
-		}
+	EnsureOutlookProcessReady(token);
+	var existing = TryGetRunningOutlookInstance();
+	if (existing != null)
+	{
+	_logger.LogDebug("Attached to running Outlook instance.");
+	return existing;
+	}
 
-		_logger.LogDebug("No running Outlook instance found, creating new Outlook.Application instance.");
-		return new Outlook.Application();
+	_logger.LogDebug("No running Outlook instance found, creating new Outlook.Application instance.");
+	return new Outlook.Application();
 	}
 
 	private Outlook.Application? TryGetRunningOutlookInstance()
 	{
-		try
-		{
-			var clsid = new Guid("0006F03A-0000-0000-C000-000000000046");
-			var hr = Ole32GetActiveObject(ref clsid, IntPtr.Zero, out var punk);
-			if (hr < 0)
-			{
-				if (hr == unchecked((int)0x800401E3) || hr == unchecked((int)0x80040154))
-				{
-					return null;
-				}
-				Marshal.ThrowExceptionForHR(hr);
-			}
-
-			try
-			{
-				return (Outlook.Application)Marshal.GetObjectForIUnknown(punk);
-			}
-			finally
-			{
-				Marshal.Release(punk);
-			}
-		}
-		catch (Exception ex)
-		{
-			_logger.LogDebug(ex, "Unable to attach to existing Outlook instance.");
-			return null;
-		}
+	try
+	{
+	return (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
 	}
-
-	[DllImport("ole32.dll")]
-	private static extern int Ole32GetActiveObject(ref Guid rclsid, IntPtr reserved, out IntPtr ppunk);
+	catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3) || ex.HResult == unchecked((int)0x80040154))
+	{
+	return null;
+	}
+	catch (Exception ex)
+	{
+	_logger.LogDebug(ex, "Unable to attach to existing Outlook instance.");
+	return null;
+	}
+	}
 
 	private void EnsureOutlookProcessReady(CancellationToken token)
 	{
