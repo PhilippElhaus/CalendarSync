@@ -352,10 +352,10 @@ public class CalendarSyncService : BackgroundService
                 }
         }
 
-	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
-	{
-		var events = new Dictionary<string, OutlookEventDto>();
-		var expandedRecurringIds = new HashSet<string>();
+        private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
+        {
+                var events = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
+                var expandedRecurringIds = new HashSet<string>();
 
 		var syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
 		var syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
@@ -367,9 +367,25 @@ public class CalendarSyncService : BackgroundService
 				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
 					continue;
 
-				if (appt.IsRecurring)
-				{
-					var globalId = appt.GlobalAppointmentID;
+                                if (appt.IsRecurring)
+                                {
+                                        var recurrenceState = Outlook.OlRecurrenceState.olApptMaster;
+                                        try
+                                        {
+                                                recurrenceState = appt.RecurrenceState;
+                                        }
+                                        catch (COMException ex)
+                                        {
+                                                _logger.LogDebug(ex, "Failed to read recurrence state for '{Subject}'. Assuming master.", appt.Subject);
+                                        }
+
+                                        if (recurrenceState != Outlook.OlRecurrenceState.olApptMaster)
+                                        {
+                                                _logger.LogDebug("Skipping non-master recurrence item '{Subject}' in state {State}.", appt.Subject, recurrenceState);
+                                                continue;
+                                        }
+
+                                        var globalId = appt.GlobalAppointmentID;
 					if (expandedRecurringIds.Contains(globalId))
 						continue;
 
@@ -405,11 +421,11 @@ public class CalendarSyncService : BackgroundService
 			}
 		}
 
-		return events;
-	}
+                return DeduplicateEvents(events);
+        }
 
-	private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
-	{
+        private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
+        {
 		var span = dto.End - dto.Start;
 		var isAllDay = dto.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
 		(dto.End.TimeOfDay == TimeSpan.Zero || dto.End.TimeOfDay >= new TimeSpan(23, 59, 0));
@@ -433,8 +449,33 @@ public class CalendarSyncService : BackgroundService
 			}
 		}
 
-		events[$"{_sourceId}-{baseUid}"] = dto;
-	}
+                events[$"{_sourceId}-{baseUid}"] = dto;
+        }
+
+        private Dictionary<string, OutlookEventDto> DeduplicateEvents(Dictionary<string, OutlookEventDto> events)
+        {
+                var deduped = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
+                var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var (uid, dto) in events)
+                {
+                        if (dto == null)
+                                continue;
+
+                        var globalId = dto.GlobalId ?? string.Empty;
+                        var signature = $"{globalId}|{dto.Start.ToUniversalTime():O}|{dto.End.ToUniversalTime():O}";
+
+                        if (!seenKeys.Add(signature))
+                        {
+                                _logger.LogWarning("Detected duplicate Outlook event for GlobalID {GlobalId} at {Start}. Dropping UID {Uid}.", globalId, dto.Start, uid);
+                                continue;
+                        }
+
+                        deduped[uid] = dto;
+                }
+
+                return deduped;
+        }
 
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
