@@ -4,6 +4,7 @@ using Ical.Net.DataTypes;
 using Ical.Net.Serialization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32;
 using System.Diagnostics;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -948,13 +949,34 @@ public class CalendarSyncService : BackgroundService
 			if (processes.Length == 0)
 			{
 				_logger.LogWarning("Outlook process not detected. Attempting to start outlook.exe in background mode.");
-				var startInfo = new ProcessStartInfo("outlook.exe")
+				var resolvedPath = ResolveOutlookExecutablePath();
+				var useShellExecute = resolvedPath == null;
+				var executable = resolvedPath ?? "outlook.exe";
+
+				var startInfo = new ProcessStartInfo(executable)
 				{
-					UseShellExecute = false,
+					UseShellExecute = useShellExecute,
 					Arguments = "/embedding",
 					WindowStyle = ProcessWindowStyle.Minimized
 				};
-				Process.Start(startInfo);
+
+				if (useShellExecute)
+				{
+					_logger.LogDebug("Starting Outlook via shell.");
+				}
+				else
+				{
+					_logger.LogDebug("Starting Outlook using resolved path '{Executable}'.", executable);
+				}
+
+				try
+				{
+					Process.Start(startInfo);
+				}
+				catch (Exception ex)
+				{
+					_logger.LogWarning(ex, "Unable to start Outlook using '{Executable}'.", executable);
+				}
 			}
 
 			var wait = Stopwatch.StartNew();
@@ -962,6 +984,13 @@ public class CalendarSyncService : BackgroundService
 			{
 				DelayWithCancellation(TimeSpan.FromSeconds(1), token);
 			}
+
+			if (Process.GetProcessesByName("OUTLOOK").Length == 0)
+			{
+				_logger.LogWarning("Outlook process could not be detected after attempting to start it. Ensure Outlook is installed and registered correctly.");
+				return;
+			}
+
 			if (wait.Elapsed < TimeSpan.FromSeconds(30))
 			{
 				DelayWithCancellation(TimeSpan.FromSeconds(2), token);
@@ -976,7 +1005,36 @@ public class CalendarSyncService : BackgroundService
 			_logger.LogWarning(ex, "Failed to ensure Outlook process is running.");
 		}
 	}
+	private string? ResolveOutlookExecutablePath()
+	{
+		if (!OperatingSystem.IsWindows())
+		{
+			return null;
+		}
 
+		try
+		{
+			using var key = Registry.LocalMachine.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\OUTLOOK.EXE");
+			var value = key?.GetValue(string.Empty) as string;
+			if (string.IsNullOrWhiteSpace(value))
+			{
+				return null;
+			}
+
+			if (File.Exists(value))
+			{
+				return value;
+			}
+
+			_logger.LogWarning("Outlook executable path '{Path}' from registry does not exist.", value);
+		}
+		catch (Exception ex)
+		{
+			_logger.LogDebug(ex, "Unable to read Outlook executable path from registry.");
+		}
+
+		return null;
+	}
 	private static void DelayWithCancellation(TimeSpan delay, CancellationToken token)
 	{
 		if (delay <= TimeSpan.Zero)
