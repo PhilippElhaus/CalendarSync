@@ -16,6 +16,14 @@ public static class StaTask
 				action();
 				tcs.SetResult();
 			}
+			catch (OperationCanceledException oce)
+			{
+				tcs.SetCanceled(oce.CancellationToken);
+			}
+			catch (ThreadInterruptedException)
+			{
+				tcs.SetCanceled(token);
+			}
 			catch (Exception ex)
 			{
 				tcs.SetException(ex);
@@ -24,7 +32,20 @@ public static class StaTask
 		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
 		thread.Start();
-		token.Register(() => tcs.TrySetCanceled(token));
+		token.Register(() =>
+		{
+			tcs.TrySetCanceled(token);
+			if (thread.IsAlive)
+			{
+				try
+				{
+					thread.Interrupt();
+				}
+				catch
+				{
+				}
+			}
+		});
 		return tcs.Task;
 	}
 
@@ -38,6 +59,14 @@ public static class StaTask
 				var result = func();
 				tcs.SetResult(result);
 			}
+			catch (OperationCanceledException oce)
+			{
+				tcs.SetCanceled(oce.CancellationToken);
+			}
+			catch (ThreadInterruptedException)
+			{
+				tcs.SetCanceled(token);
+			}
 			catch (Exception ex)
 			{
 				tcs.SetException(ex);
@@ -46,7 +75,20 @@ public static class StaTask
 		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
 		thread.Start();
-		token.Register(() => tcs.TrySetCanceled(token));
+		token.Register(() =>
+		{
+			tcs.TrySetCanceled(token);
+			if (thread.IsAlive)
+			{
+				try
+				{
+					thread.Interrupt();
+				}
+				catch
+				{
+				}
+			}
+		});
 		return tcs.Task;
 	}
 }
