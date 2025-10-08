@@ -29,10 +29,10 @@ public class Program
 			Application.Exit();
 		};
 
-		tray.WipeIosCalendarClicked += async (_, _) =>
-		{
-			await service.WipeEntireCalendarAsync();
-		};
+                tray.FullResyncClicked += async (_, _) =>
+                {
+                        await service.TriggerFullResyncAsync();
+                };
 
 		host.StartAsync().GetAwaiter().GetResult();
 		Application.Run();

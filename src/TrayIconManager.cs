@@ -11,7 +11,7 @@ public sealed class TrayIconManager : IDisposable
         private readonly ContextMenuStrip _menu;
 
         public event EventHandler? ExitClicked;
-        public event EventHandler? WipeIosCalendarClicked;
+        public event EventHandler? FullResyncClicked;
 
 	public TrayIconManager()
 	{
@@ -41,18 +41,18 @@ public sealed class TrayIconManager : IDisposable
 		};
                 _menu.Items.Add(logsItem);
 
-                var wipeItem = new ToolStripMenuItem("Wipe iOS Calendar");
-                wipeItem.Click += (_, _) =>
+                var fullResyncItem = new ToolStripMenuItem("Full Re-Sync");
+                fullResyncItem.Click += (_, _) =>
                 {
                         var confirm = MessageBox.Show(
-                                "This will delete all events from the iCloud calendar. Continue?",
-                                "Confirm Wipe",
+                                "This will delete all events from the iCloud calendar and start a fresh sync. Continue?",
+                                "Confirm Full Re-Sync",
                                 MessageBoxButtons.YesNo,
                                 MessageBoxIcon.Warning);
                         if (confirm == DialogResult.Yes)
-                                WipeIosCalendarClicked?.Invoke(this, EventArgs.Empty);
+                                FullResyncClicked?.Invoke(this, EventArgs.Empty);
                 };
-                _menu.Items.Add(wipeItem);
+                _menu.Items.Add(fullResyncItem);
 
 		var exitItem = new ToolStripMenuItem("Exit");
 		exitItem.Click += (_, _) => ExitClicked?.Invoke(this, EventArgs.Empty);
