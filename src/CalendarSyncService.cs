@@ -4,20 +4,17 @@ using Ical.Net.DataTypes;
 using Ical.Net.Serialization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using System.Collections.Generic;
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Linq;
-using System.Windows.Forms;
 using Outlook = Microsoft.Office.Interop.Outlook;
-using System.Net;
 
 namespace CalendarSync.src;
 
 public class CalendarSyncService : BackgroundService
-		{
-
+{
 	private record OutlookEventDto(
 	string Subject,
 	string Body,
@@ -37,6 +34,10 @@ public class CalendarSyncService : BackgroundService
 	private readonly string? _tag;
 	private readonly SemaphoreSlim _opLock = new SemaphoreSlim(1, 1);
 	private CancellationTokenSource _currentOpCts = new CancellationTokenSource();
+	private static readonly Guid OutlookApplicationClsid = new("0006F03A-0000-0000-C000-000000000046");
+
+	[DllImport("oleaut32.dll")]
+	private static extern int GetActiveObjectNative(ref Guid rclsid, IntPtr pvReserved, [MarshalAs(UnmanagedType.IUnknown)] out object? ppunk);
 
 	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger, TrayIconManager tray)
 	{
@@ -89,41 +90,41 @@ public class CalendarSyncService : BackgroundService
 
 		try
 		{
-		var outlookEvents = await FetchOutlookEventsAsync(stoppingToken);
+			var outlookEvents = await FetchOutlookEventsAsync(stoppingToken);
 
-		using var client = CreateHttpClient();
-		var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+			using var client = CreateHttpClient();
+			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 
-		if (_isFirstRun)
-		{
+			if (_isFirstRun)
+			{
 				_logger.LogInformation("First run detected, initiating wipe.");
 				await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken, true);
 				_isFirstRun = false;
 				_tray.SetUpdating();
-		}
+			}
 
-		await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
+			await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
 
 			EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
-}
+		}
 		catch (UnauthorizedAccessException ex)
-{
+		{
 			_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
 			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
 			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
-}
+		}
 		catch (OperationCanceledException)
-{
+		{
 			_logger.LogError("Outlook operation timed out.");
 			EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
-}
+		}
 		catch (Exception ex)
-{
+		{
 			_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
-}
+		}
 		finally
 		{
-		_tray.SetIdle();
+			_tray.SetIdle();
 		}
 
 		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
@@ -172,7 +173,7 @@ public class CalendarSyncService : BackgroundService
 						calendar = null;
 						items = null;
 						if (retryCount == maxRetries)
-						throw;
+							throw;
 						EnsureOutlookProcessReady(cts.Token);
 						_logger.LogDebug("Waiting 10 seconds before retry.");
 						DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
@@ -192,7 +193,7 @@ public class CalendarSyncService : BackgroundService
 						calendar = null;
 						items = null;
 						if (retryCount == maxRetries)
-						throw;
+							throw;
 						EnsureOutlookProcessReady(cts.Token);
 						_logger.LogDebug("Waiting 10 seconds before retry.");
 						DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
@@ -230,7 +231,7 @@ public class CalendarSyncService : BackgroundService
 					try
 					{
 						if (item is Outlook.AppointmentItem appt)
-						allItems.Add(appt);
+							allItems.Add(appt);
 					}
 					catch (Exception ex)
 					{
@@ -253,6 +254,7 @@ public class CalendarSyncService : BackgroundService
 			}
 		}, cts.Token);
 	}
+
 	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token, bool filterBySource)
 	{
 		if (filterBySource)
@@ -278,13 +280,11 @@ public class CalendarSyncService : BackgroundService
 			await Task.Delay(300, token);
 			try
 			{
-
 				var deleteResponse = await client.SendAsync(deleteRequest);
 				if (deleteResponse.IsSuccessStatusCode)
 					_logger.LogInformation("Deleted iCloud event with UID {Uid}", iCloudUid);
 				else
 				{
-
 					if (deleteResponse.StatusCode == HttpStatusCode.Unauthorized || deleteResponse.StatusCode == HttpStatusCode.Forbidden)
 						throw new UnauthorizedAccessException("iCloud authentication failed.");
 					_logger.LogWarning("Failed to delete iCloud event UID {Uid}: {Status} - {Reason}", iCloudUid, deleteResponse.StatusCode, deleteResponse.ReasonPhrase);
@@ -292,7 +292,6 @@ public class CalendarSyncService : BackgroundService
 			}
 			catch (Exception ex)
 			{
-
 				_logger.LogError(ex, "Exception while deleting iCloud event UID {Uid}", iCloudUid);
 				await Task.Delay(5000, token);
 			}
@@ -339,47 +338,47 @@ public class CalendarSyncService : BackgroundService
 
 		foreach (var appt in appts)
 		{
-		try
-		{
+			try
+			{
 				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
-				continue;
+					continue;
 
 				if (appt.IsRecurring)
 				{
-				var globalId = appt.GlobalAppointmentID;
-				if (expandedRecurringIds.Contains(globalId))
-				continue;
+					var globalId = appt.GlobalAppointmentID;
+					if (expandedRecurringIds.Contains(globalId))
+						continue;
 
-				expandedRecurringIds.Add(globalId);
+					expandedRecurringIds.Add(globalId);
 
-				var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
-				_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
+					var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
+					_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
 
-				foreach (var (uid, start, end) in instances)
-				{
-				var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
-				AddEventChunks(events, uid, dto);
-				}
-				continue;
+					foreach (var (uid, start, end) in instances)
+					{
+						var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
+						AddEventChunks(events, uid, dto);
+					}
+					continue;
 				}
 
 				// Single non-recurring event
 				var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
 				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
 				AddEventChunks(events, uid_, dtoItem);
-		}
-		catch (Exception ex)
-		{
+			}
+			catch (Exception ex)
+			{
 				_logger.LogWarning(ex, "Failed to process appointment.");
-		}
-		finally
-		{
+			}
+			finally
+			{
 				try
 				{
-				Marshal.FinalReleaseComObject(appt);
+					Marshal.FinalReleaseComObject(appt);
 				}
 				catch { }
-		}
+			}
 		}
 
 		return events;
@@ -393,21 +392,21 @@ public class CalendarSyncService : BackgroundService
 
 		if (isAllDay)
 		{
-		var endDate = dto.End.TimeOfDay == TimeSpan.Zero ? dto.End.Date : dto.End.Date.AddDays(1);
-		var days = (endDate - dto.Start.Date).Days;
+			var endDate = dto.End.TimeOfDay == TimeSpan.Zero ? dto.End.Date : dto.End.Date.AddDays(1);
+			var days = (endDate - dto.Start.Date).Days;
 
-		if (days > 1)
-		{
+			if (days > 1)
+			{
 				for (var i = 0; i < days; i++)
 				{
-				var dayStart = dto.Start.Date.AddDays(i);
-				var dayEnd = dayStart.AddDays(1);
-				var uid = $"{_sourceId}-{baseUid}-{dayStart:yyyyMMdd}";
-				var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStart, dayEnd, dto.GlobalId);
-				events[uid] = dayDto;
+					var dayStart = dto.Start.Date.AddDays(i);
+					var dayEnd = dayStart.AddDays(1);
+					var uid = $"{_sourceId}-{baseUid}-{dayStart:yyyyMMdd}";
+					var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStart, dayEnd, dto.GlobalId);
+					events[uid] = dayDto;
 				}
 				return;
-		}
+			}
 		}
 
 		events[$"{_sourceId}-{baseUid}"] = dto;
@@ -524,7 +523,7 @@ public class CalendarSyncService : BackgroundService
 		var content = await response.Content.ReadAsStringAsync();
 
 		if (!response.IsSuccessStatusCode)
-{
+		{
 			_logger.LogWarning("Failed to fetch iCloud events: {Status} - {Reason}", response.StatusCode, response.ReasonPhrase);
 			EventRecorder.WriteEntry("iCloud fetch failed", EventLogEntryType.Error);
 			if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
@@ -578,31 +577,31 @@ public class CalendarSyncService : BackgroundService
 
 		if (isAllDay)
 		{
-		start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
-		var endDate = appt.End.TimeOfDay == TimeSpan.Zero ? appt.End.Date : appt.End.Date.AddDays(1);
-		end = new CalDateTime(endDate, tzId: null, hasTime: false);
+			start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
+			var endDate = appt.End.TimeOfDay == TimeSpan.Zero ? appt.End.Date : appt.End.Date.AddDays(1);
+			end = new CalDateTime(endDate, tzId: null, hasTime: false);
 		}
 		else
 		{
-		start = new CalDateTime(appt.Start.ToUniversalTime());
-		end = new CalDateTime(appt.End.ToUniversalTime());
+			start = new CalDateTime(appt.Start.ToUniversalTime());
+			end = new CalDateTime(appt.End.ToUniversalTime());
 		}
 
 		var calEvent = new CalendarEvent
 		{
-		Summary = summary,
-		Start = start,
-		End = end,
-		Location = appt.Location ?? "",
-		Uid = uid,
-		Description = appt.Body ?? ""
+			Summary = summary,
+			Start = start,
+			End = end,
+			Location = appt.Location ?? "",
+			Uid = uid,
+			Description = appt.Body ?? ""
 		};
 
 		// Reminders
 		if (!isAllDay)
 		{
-		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
-		calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
+			calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
+			calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
 		}
 
 		return calEvent;
@@ -639,8 +638,6 @@ public class CalendarSyncService : BackgroundService
 
 		return false;
 	}
-
-
 
 	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original, CancellationToken token)
 	{
@@ -903,33 +900,44 @@ public class CalendarSyncService : BackgroundService
 
 	private Outlook.Application CreateOutlookApplication(CancellationToken token)
 	{
-	EnsureOutlookProcessReady(token);
-	var existing = TryGetRunningOutlookInstance();
-	if (existing != null)
-	{
-	_logger.LogDebug("Attached to running Outlook instance.");
-	return existing;
-	}
+		EnsureOutlookProcessReady(token);
+		var existing = TryGetRunningOutlookInstance();
+		if (existing != null)
+		{
+			_logger.LogDebug("Attached to running Outlook instance.");
+			return existing;
+		}
 
-	_logger.LogDebug("No running Outlook instance found, creating new Outlook.Application instance.");
-	return new Outlook.Application();
+		_logger.LogDebug("No running Outlook instance found, creating new Outlook.Application instance.");
+		return new Outlook.Application();
 	}
 
 	private Outlook.Application? TryGetRunningOutlookInstance()
 	{
-	try
-	{
-	return (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
-	}
-	catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3) || ex.HResult == unchecked((int)0x80040154))
-	{
-	return null;
-	}
-	catch (Exception ex)
-	{
-	_logger.LogDebug(ex, "Unable to attach to existing Outlook instance.");
-	return null;
-	}
+		try
+		{
+			var clsid = OutlookApplicationClsid;
+			var hr = GetActiveObjectNative(ref clsid, IntPtr.Zero, out var activeObject);
+			if (hr < 0)
+			{
+				Marshal.ThrowExceptionForHR(hr);
+			}
+			if (activeObject is Outlook.Application outlookApp)
+			{
+				return outlookApp;
+			}
+			_logger.LogDebug("Active Outlook COM object was not of the expected type.");
+			return null;
+		}
+		catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3) || ex.HResult == unchecked((int)0x80040154))
+		{
+			return null;
+		}
+		catch (Exception ex)
+		{
+			_logger.LogDebug(ex, "Unable to attach to existing Outlook instance.");
+			return null;
+		}
 	}
 
 	private void EnsureOutlookProcessReady(CancellationToken token)
@@ -971,31 +979,32 @@ public class CalendarSyncService : BackgroundService
 
 	private static void DelayWithCancellation(TimeSpan delay, CancellationToken token)
 	{
-	if (delay <= TimeSpan.Zero)
-	{
-	return;
+		if (delay <= TimeSpan.Zero)
+		{
+			return;
+		}
+
+		var waitHandles = new[] { token.WaitHandle };
+		if (WaitHandle.WaitAny(waitHandles, delay) == WaitHandle.WaitTimeout)
+		{
+			return;
+		}
+
+		token.ThrowIfCancellationRequested();
 	}
 
-	var waitHandles = new[] { token.WaitHandle };
-	if (WaitHandle.WaitAny(waitHandles, delay) == WaitHandle.WaitTimeout)
-	{
-	return;
-	}
-
-	token.ThrowIfCancellationRequested();
-	}
 	private void CleanupOutlook(Outlook.Application app, Outlook.NameSpace ns, Outlook.MAPIFolder folder, Outlook.Items items)
 	{
 		try
 		{
 			if (items != null)
-			Marshal.FinalReleaseComObject(items);
+				Marshal.FinalReleaseComObject(items);
 			if (folder != null)
-			Marshal.FinalReleaseComObject(folder);
+				Marshal.FinalReleaseComObject(folder);
 			if (ns != null)
-			Marshal.FinalReleaseComObject(ns);
+				Marshal.FinalReleaseComObject(ns);
 			if (app != null)
-			Marshal.FinalReleaseComObject(app);
+				Marshal.FinalReleaseComObject(app);
 		}
 		catch
 		{
