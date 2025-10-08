@@ -14,6 +14,9 @@ public class Program
 	public static void Main(string[] args)
 	{
 		EventRecorder.Initialize();
+		using var singleInstanceMutex = new System.Threading.Mutex(true, "CalendarSync", out var createdNewInstance);
+		if (!createdNewInstance)
+			return;
 		SubscribeToGlobalExceptions();
 		EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
 
