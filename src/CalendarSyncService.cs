@@ -33,9 +33,9 @@ public class CalendarSyncService : BackgroundService
 	private readonly TimeSpan _syncInterval;
 	private readonly string _sourceId;
 	private readonly string? _tag;
-        private readonly SemaphoreSlim _opLock = new SemaphoreSlim(1, 1);
-        private CancellationTokenSource _currentOpCts = new CancellationTokenSource();
-        private CancellationToken _serviceStoppingToken = CancellationToken.None;
+	private readonly SemaphoreSlim _opLock = new SemaphoreSlim(1, 1);
+	private CancellationTokenSource _currentOpCts = new CancellationTokenSource();
+	private CancellationToken _serviceStoppingToken = CancellationToken.None;
 	private static readonly Guid OutlookApplicationClsid = new("0006F03A-0000-0000-C000-000000000046");
 
 	[DllImport("oleaut32.dll")]
@@ -54,9 +54,9 @@ public class CalendarSyncService : BackgroundService
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
-                _serviceStoppingToken = stoppingToken;
+		_serviceStoppingToken = stoppingToken;
 
-                _logger.LogInformation("Calendar Sync Service started.");
+		_logger.LogInformation("Calendar Sync Service started.");
 		EventRecorder.WriteEntry("Service started", EventLogEntryType.Information);
 
 		_logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
@@ -117,22 +117,22 @@ public class CalendarSyncService : BackgroundService
 			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
 			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
 		}
-                catch (OperationCanceledException ex)
-                {
-                        if (_serviceStoppingToken.IsCancellationRequested)
-                        {
-                                _logger.LogInformation("Sync canceled because the service is stopping.");
-                        }
-                        else if (_currentOpCts.IsCancellationRequested)
-                        {
-                                _logger.LogInformation("Sync canceled in preparation for a manual full re-sync.");
-                        }
-                        else
-                        {
-                                _logger.LogError(ex, "Outlook operation timed out.");
-                                EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
-                        }
-                }
+		catch (OperationCanceledException ex)
+		{
+			if (_serviceStoppingToken.IsCancellationRequested)
+			{
+				_logger.LogInformation("Sync canceled because the service is stopping.");
+			}
+			else if (_currentOpCts.IsCancellationRequested)
+			{
+				_logger.LogInformation("Sync canceled in preparation for a manual full re-sync.");
+			}
+			else
+			{
+				_logger.LogError(ex, "Outlook operation timed out.");
+				EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
+			}
+		}
 		catch (Exception ex)
 		{
 			_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
@@ -319,43 +319,43 @@ public class CalendarSyncService : BackgroundService
 		await Task.Delay(TimeSpan.FromSeconds(30), token);
 	}
 
-        public async Task TriggerFullResyncAsync()
-        {
-                EventRecorder.WriteEntry("Manual full re-sync requested", EventLogEntryType.Information);
-                _currentOpCts.Cancel();
-                await _opLock.WaitAsync();
-                try
-                {
-                        _currentOpCts = new CancellationTokenSource();
-                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_currentOpCts.Token, _serviceStoppingToken);
-                        var token = linkedCts.Token;
-                        using var client = CreateHttpClient();
-                        var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
-                        await WipeICloudCalendarAsync(client, calendarUrl, token, false);
-                        token.ThrowIfCancellationRequested();
-                        _tray.SetUpdating();
-                        await PerformSyncAsync(token);
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                        _logger.LogError(ex, "iCloud authorization failed. Check credentials.");
-                        EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
-                        MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                catch (OperationCanceledException)
-                {
-                        _logger.LogInformation("Manual full re-sync canceled.");
-                }
-                finally
-                {
-                        _opLock.Release();
-                }
-        }
+	public async Task TriggerFullResyncAsync()
+	{
+		EventRecorder.WriteEntry("Manual full re-sync requested", EventLogEntryType.Information);
+		_currentOpCts.Cancel();
+		await _opLock.WaitAsync();
+		try
+		{
+			_currentOpCts = new CancellationTokenSource();
+			using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_currentOpCts.Token, _serviceStoppingToken);
+			var token = linkedCts.Token;
+			using var client = CreateHttpClient();
+			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+			await WipeICloudCalendarAsync(client, calendarUrl, token, false);
+			token.ThrowIfCancellationRequested();
+			_tray.SetUpdating();
+			await PerformSyncAsync(token);
+		}
+		catch (UnauthorizedAccessException ex)
+		{
+			_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
+			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
+			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+		}
+		catch (OperationCanceledException)
+		{
+			_logger.LogInformation("Manual full re-sync canceled.");
+		}
+		finally
+		{
+			_opLock.Release();
+		}
+	}
 
-        private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
-        {
-                var events = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
-                var expandedRecurringIds = new HashSet<string>();
+	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
+	{
+		var events = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
+		var expandedRecurringIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
 		var syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
 		var syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
@@ -367,37 +367,92 @@ public class CalendarSyncService : BackgroundService
 				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
 					continue;
 
-                                if (appt.IsRecurring)
-                                {
-                                        var recurrenceState = Outlook.OlRecurrenceState.olApptMaster;
-                                        try
-                                        {
-                                                recurrenceState = appt.RecurrenceState;
-                                        }
-                                        catch (COMException ex)
-                                        {
-                                                _logger.LogDebug(ex, "Failed to read recurrence state for '{Subject}'. Assuming master.", appt.Subject);
-                                        }
+				if (appt.IsRecurring)
+				{
+					Outlook.AppointmentItem seriesItem = appt;
+					Outlook.AppointmentItem? masterItem = null;
+					var shouldReleaseMaster = false;
+					var globalId = appt.GlobalAppointmentID;
 
-                                        if (recurrenceState != Outlook.OlRecurrenceState.olApptMaster)
+					var recurrenceState = Outlook.OlRecurrenceState.olApptMaster;
+					try
+					{
+						recurrenceState = appt.RecurrenceState;
+					}
+					catch (COMException ex)
+					{
+						_logger.LogDebug(ex, "Failed to read recurrence state for '{Subject}'. Assuming master.", appt.Subject);
+					}
+
+					if (recurrenceState != Outlook.OlRecurrenceState.olApptMaster)
+					{
+						try
+						{
+							var pattern = appt.GetRecurrencePattern();
+							if (pattern?.Parent is Outlook.AppointmentItem parent)
+							{
+								masterItem = parent;
+								if (!ReferenceEquals(parent, appt))
+								{
+									shouldReleaseMaster = true;
+									seriesItem = parent;
+								}
+								try
+								{
+									if (!string.IsNullOrEmpty(parent.GlobalAppointmentID))
+										globalId = parent.GlobalAppointmentID;
+								}
+								catch (COMException)
+								{
+								}
+							}
+						}
+						catch (COMException ex)
+						{
+							_logger.LogDebug(ex, "Failed to resolve master item for '{Subject}'.", appt.Subject);
+						}
+					}
+
+					if (string.IsNullOrEmpty(globalId))
+						globalId = appt.GlobalAppointmentID;
+
+					if (string.IsNullOrEmpty(globalId))
+						globalId = Guid.NewGuid().ToString();
+
+					    if (!expandedRecurringIds.Add(globalId))
                                         {
-                                                _logger.LogDebug("Skipping non-master recurrence item '{Subject}' in state {State}.", appt.Subject, recurrenceState);
+                                                if (shouldReleaseMaster && masterItem != null)
+                                                {
+                                                        try
+                                                        {
+                                                                Marshal.FinalReleaseComObject(masterItem);
+                                                        }
+                                                        catch { }
+                                                }
                                                 continue;
                                         }
 
-                                        var globalId = appt.GlobalAppointmentID;
-					if (expandedRecurringIds.Contains(globalId))
-						continue;
-
-					expandedRecurringIds.Add(globalId);
-
-					var instances = ExpandRecurrenceManually(appt, syncStart, syncEnd);
-					_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", appt.Subject, instances.Count);
-
-					foreach (var (uid, start, end) in instances)
+					try
 					{
-						var dto = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, start, end, globalId);
-						AddEventChunks(events, uid, dto);
+						var instances = ExpandRecurrenceManually(seriesItem, syncStart, syncEnd);
+						_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", seriesItem.Subject, instances.Count);
+
+						foreach (var (uid, start, end) in instances)
+						{
+							var dto = new OutlookEventDto(seriesItem.Subject, seriesItem.Body, seriesItem.Location, start, end, globalId);
+							AddEventChunks(events, uid, dto);
+						}
+					}
+					finally
+					{
+						if (shouldReleaseMaster && masterItem != null)
+						{
+							try
+							{
+								Marshal.FinalReleaseComObject(masterItem);
+							}
+							catch { }
+						}
 					}
 					continue;
 				}
@@ -421,11 +476,11 @@ public class CalendarSyncService : BackgroundService
 			}
 		}
 
-                return DeduplicateEvents(events);
-        }
+		return DeduplicateEvents(events);
+	}
 
-        private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
-        {
+	private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
+	{
 		var span = dto.End - dto.Start;
 		var isAllDay = dto.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
 		(dto.End.TimeOfDay == TimeSpan.Zero || dto.End.TimeOfDay >= new TimeSpan(23, 59, 0));
@@ -449,33 +504,33 @@ public class CalendarSyncService : BackgroundService
 			}
 		}
 
-                events[$"{_sourceId}-{baseUid}"] = dto;
-        }
+		events[$"{_sourceId}-{baseUid}"] = dto;
+	}
 
-        private Dictionary<string, OutlookEventDto> DeduplicateEvents(Dictionary<string, OutlookEventDto> events)
-        {
-                var deduped = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
-                var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+	private Dictionary<string, OutlookEventDto> DeduplicateEvents(Dictionary<string, OutlookEventDto> events)
+	{
+		var deduped = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
+		var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                foreach (var (uid, dto) in events)
-                {
-                        if (dto == null)
-                                continue;
+		foreach (var (uid, dto) in events)
+		{
+			if (dto == null)
+				continue;
 
-                        var globalId = dto.GlobalId ?? string.Empty;
-                        var signature = $"{globalId}|{dto.Start.ToUniversalTime():O}|{dto.End.ToUniversalTime():O}";
+			var globalId = dto.GlobalId ?? string.Empty;
+			var signature = $"{globalId}|{dto.Start.ToUniversalTime():O}|{dto.End.ToUniversalTime():O}";
 
-                        if (!seenKeys.Add(signature))
-                        {
-                                _logger.LogWarning("Detected duplicate Outlook event for GlobalID {GlobalId} at {Start}. Dropping UID {Uid}.", globalId, dto.Start, uid);
-                                continue;
-                        }
+			if (!seenKeys.Add(signature))
+			{
+				_logger.LogWarning("Detected duplicate Outlook event for GlobalID {GlobalId} at {Start}. Dropping UID {Uid}.", globalId, dto.Start, uid);
+				continue;
+			}
 
-                        deduped[uid] = dto;
-                }
+			deduped[uid] = dto;
+		}
 
-                return deduped;
-        }
+		return deduped;
+	}
 
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
@@ -1069,6 +1124,7 @@ public class CalendarSyncService : BackgroundService
 			_logger.LogWarning(ex, "Failed to ensure Outlook process is running.");
 		}
 	}
+
 	private string? ResolveOutlookExecutablePath()
 	{
 		if (!OperatingSystem.IsWindows())
@@ -1099,6 +1155,7 @@ public class CalendarSyncService : BackgroundService
 
 		return null;
 	}
+
 	private static void DelayWithCancellation(TimeSpan delay, CancellationToken token)
 	{
 		if (delay <= TimeSpan.Zero)
