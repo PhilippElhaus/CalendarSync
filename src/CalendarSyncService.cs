@@ -1021,15 +1021,48 @@ public class CalendarSyncService : BackgroundService
 	private Outlook.Application CreateOutlookApplication(CancellationToken token)
 	{
 		EnsureOutlookProcessReady(token);
-		var existing = TryGetRunningOutlookInstance();
-		if (existing != null)
+		Outlook.Application? application = null;
+		COMException? lastServerException = null;
+		const int maxAttempts = 3;
+
+		for (var attempt = 1; attempt <= maxAttempts; attempt++)
 		{
-			_logger.LogDebug("Attached to running Outlook instance.");
-			return existing;
+			token.ThrowIfCancellationRequested();
+
+			application = TryGetRunningOutlookInstance();
+			if (application != null)
+			{
+				_logger.LogDebug("Attached to running Outlook instance.");
+				return application;
+			}
+
+			try
+			{
+				_logger.LogDebug("Attempting to create Outlook.Application instance (attempt {Attempt}/{MaxAttempts}).", attempt, maxAttempts);
+				application = new Outlook.Application();
+				_logger.LogDebug("Created new Outlook.Application instance.");
+				return application;
+			}
+			catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
+			{
+				lastServerException = ex;
+				_logger.LogWarning(ex, "Outlook.Application creation failed with CO_E_SERVER_EXEC_FAILURE, attempt {Attempt}/{MaxAttempts}.", attempt, maxAttempts);
+				if (attempt == maxAttempts)
+				{
+					break;
+				}
+				DelayWithCancellation(TimeSpan.FromSeconds(5), token);
+			}
 		}
 
-		_logger.LogDebug("No running Outlook instance found, creating new Outlook.Application instance.");
-		return new Outlook.Application();
+		application = TryGetRunningOutlookInstance();
+		if (application != null)
+		{
+			_logger.LogDebug("Attached to running Outlook instance after retry failures.");
+			return application;
+		}
+
+		throw lastServerException ?? new COMException("Failed to create Outlook.Application instance.", unchecked((int)0x80080005));
 	}
 
 	private Outlook.Application? TryGetRunningOutlookInstance()
