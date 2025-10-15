@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Linq;
 using Outlook = Microsoft.Office.Interop.Outlook;
+using System.Linq;
 
 namespace CalendarSync.src;
 
@@ -643,8 +644,7 @@ public class CalendarSyncService : BackgroundService
 			}
 
 			var ics = await response.Content.ReadAsStringAsync();
-			var calendars = Calendar.Load(ics);
-			var calendar = calendars?.FirstOrDefault();
+			var calendar = Calendar.Load(ics);
 			var calEvent = calendar?.Events?.FirstOrDefault();
 			if (calEvent == null)
 			{
