@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 
