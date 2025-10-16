@@ -864,27 +864,35 @@ public class CalendarSyncService : BackgroundService
 		var isAllDay = appt.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
 			(appt.EndLocal.TimeOfDay == TimeSpan.Zero || appt.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
 
-		if (isAllDay)
-		{
-			start = new CalDateTime(appt.StartLocal.Date, tzId: null, hasTime: false);
-			var endDate = appt.EndLocal.TimeOfDay == TimeSpan.Zero ? appt.EndLocal.Date : appt.EndLocal.Date.AddDays(1);
-			end = new CalDateTime(endDate, tzId: null, hasTime: false);
-		}
-		else
-		{
-			start = new CalDateTime(appt.StartUtc);
-			end = new CalDateTime(appt.EndUtc);
-		}
+                if (isAllDay)
+                {
+                        var startDate = appt.StartLocal.Date;
+                        var endDate = appt.EndLocal.TimeOfDay == TimeSpan.Zero ? appt.EndLocal.Date : appt.EndLocal.Date.AddDays(1);
+                        start = new CalDateTime(startDate) { HasTime = false, IsFloating = true };
+                        end = new CalDateTime(endDate) { HasTime = false, IsFloating = true };
+                }
+                else
+                {
+                        start = new CalDateTime(appt.StartUtc);
+                        end = new CalDateTime(appt.EndUtc);
+                }
 
-		var calEvent = new CalendarEvent
-		{
-			Summary = summary,
-			Start = start,
-			End = end,
-			Location = appt.Location ?? "",
-			Uid = uid,
-			Description = appt.Body ?? ""
-		};
+                var calEvent = new CalendarEvent
+                {
+                        Summary = summary,
+                        Start = start,
+                        End = end,
+                        Location = appt.Location ?? "",
+                        Uid = uid,
+                        Description = appt.Body ?? "",
+                        IsAllDay = isAllDay
+                };
+
+                if (isAllDay)
+                {
+                        calEvent.Start.HasTime = false;
+                        calEvent.End.HasTime = false;
+                }
 
 		// Reminders
 		if (!isAllDay)
