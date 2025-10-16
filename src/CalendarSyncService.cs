@@ -32,10 +32,13 @@ public class CalendarSyncService : BackgroundService
 	private readonly ILogger<CalendarSyncService> _logger;
 	private readonly TrayIconManager _tray;
 	private static bool _isFirstRun = true;
+	private const double TimezoneSanityToleranceMinutes = 1;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
 	private readonly string _sourceId;
 	private readonly string? _tag;
+	private readonly TimeZoneInfo _sourceTimeZone;
+	private readonly TimeZoneInfo _targetTimeZone;
 	private readonly SemaphoreSlim _opLock = new SemaphoreSlim(1, 1);
 	private CancellationTokenSource _currentOpCts = new CancellationTokenSource();
 	private CancellationToken _serviceStoppingToken = CancellationToken.None;
@@ -53,7 +56,11 @@ public class CalendarSyncService : BackgroundService
 		_syncInterval = TimeSpan.FromMinutes(_config.SyncIntervalMinutes);
 		_sourceId = _config.SourceId ?? "";
 		_tag = string.IsNullOrWhiteSpace(_config.EventTag) ? null : _config.EventTag!.Trim();
-	}
+		_sourceTimeZone = ResolveTimeZone(_config.SourceTimeZoneId, "source");
+		_targetTimeZone = ResolveTimeZone(_config.TargetTimeZoneId, "target");
+		if (!_sourceTimeZone.Id.Equals(_targetTimeZone.Id, StringComparison.OrdinalIgnoreCase))
+			_logger.LogInformation("Source timezone {Source} and target timezone {Target} differ; synchronizing via UTC conversions.", _sourceTimeZone.Id, _targetTimeZone.Id);
+		}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
@@ -360,8 +367,9 @@ public class CalendarSyncService : BackgroundService
 		var events = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
 		var expandedRecurringIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-		var syncStart = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
-		var syncEnd = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
+		var sourceToday = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sourceTimeZone).Date;
+		var syncStart = sourceToday.AddDays(-_config.SyncDaysIntoPast);
+		var syncEnd = sourceToday.AddDays(_config.SyncDaysIntoFuture);
 
 		foreach (var appt in appts)
 		{
@@ -460,10 +468,12 @@ public class CalendarSyncService : BackgroundService
 					continue;
 				}
 
-					// Single non-recurring event
-					var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
-					var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.StartUTC, appt.EndUTC, appt.GlobalAppointmentID);
-					AddEventChunks(events, uid_, dtoItem);
+				// Single non-recurring event
+				var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+				var (singleStartLocal, singleStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"event '{appt.Subject}' start");
+				var (singleEndLocal, singleEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"event '{appt.Subject}' end");
+				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, singleStartLocal, singleEndLocal, singleStartUtc, singleEndUtc, appt.GlobalAppointmentID);
+				AddEventChunks(events, uid_, dtoItem);
 			}
 			catch (Exception ex)
 			{
@@ -484,35 +494,35 @@ public class CalendarSyncService : BackgroundService
 
 	private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
 	{
-		var span = dto.EndLocal - dto.StartLocal;
-		var isAllDay = dto.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-			(dto.EndLocal.TimeOfDay == TimeSpan.Zero || dto.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
+		var sanitizedDto = EnsureEventConsistency(dto, baseUid);
+		var span = sanitizedDto.EndLocal - sanitizedDto.StartLocal;
+		var isAllDay = sanitizedDto.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+			(sanitizedDto.EndLocal.TimeOfDay == TimeSpan.Zero || sanitizedDto.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
 
 		if (isAllDay)
 		{
-			var endDate = dto.EndLocal.TimeOfDay == TimeSpan.Zero ? dto.EndLocal.Date : dto.EndLocal.Date.AddDays(1);
-			var days = (endDate - dto.StartLocal.Date).Days;
+			var endDate = sanitizedDto.EndLocal.TimeOfDay == TimeSpan.Zero ? sanitizedDto.EndLocal.Date : sanitizedDto.EndLocal.Date.AddDays(1);
+			var days = (endDate - sanitizedDto.StartLocal.Date).Days;
 
 			if (days > 1)
 			{
 				for (var i = 0; i < days; i++)
 				{
-					var dayStartLocal = dto.StartLocal.Date.AddDays(i);
+					var dayStartLocal = sanitizedDto.StartLocal.Date.AddDays(i);
 					var dayEndLocal = dayStartLocal.AddDays(1);
-					var dayStartUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(dayStartLocal, DateTimeKind.Local));
-					var dayEndUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(dayEndLocal, DateTimeKind.Local));
+					var dayStartUtc = ConvertFromSourceLocalToUtc(dayStartLocal, $"{baseUid} day {i + 1} start");
+					var dayEndUtc = ConvertFromSourceLocalToUtc(dayEndLocal, $"{baseUid} day {i + 1} end");
 					var uid = $"{_sourceId}-{baseUid}-{dayStartLocal:yyyyMMdd}";
-					var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStartLocal, dayEndLocal, dayStartUtc, dayEndUtc, dto.GlobalId);
-					events[uid] = dayDto;
+					var dayDto = new OutlookEventDto(sanitizedDto.Subject, sanitizedDto.Body, sanitizedDto.Location, dayStartLocal, dayEndLocal, dayStartUtc, dayEndUtc, sanitizedDto.GlobalId);
+					var sanitizedDay = EnsureEventConsistency(dayDto, uid);
+					events[uid] = sanitizedDay;
 				}
 				return;
 			}
 		}
 
-		events[$"{_sourceId}-{baseUid}"] = dto;
+		events[$"{_sourceId}-{baseUid}"] = sanitizedDto;
 	}
-
-
 	private Dictionary<string, OutlookEventDto> DeduplicateEvents(Dictionary<string, OutlookEventDto> events)
 	{
 		var deduped = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
@@ -935,7 +945,7 @@ public class CalendarSyncService : BackgroundService
 	}
 
 	private List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
-	{
+{
 		var results = new List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)>();
 
 		Outlook.RecurrencePattern pattern;
@@ -1006,6 +1016,9 @@ public class CalendarSyncService : BackgroundService
 				rule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
 		}
 
+		var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"series '{appt.Subject}' start");
+		var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
+
 		var apptIsMaster = false;
 		try
 		{
@@ -1027,23 +1040,25 @@ public class CalendarSyncService : BackgroundService
 				master = pattern.Parent as Outlook.AppointmentItem;
 				if (master != null && !ReferenceEquals(master, appt))
 				{
-					releaseMaster = true;
+						releaseMaster = true;
 					try
-					{
-						masterStart = master.Start;
-						masterEnd = master.End;
-					}
+{
+					var (resolvedMasterStart, _) = NormalizeOutlookTimes(master.Start, master.StartUTC, $"master '{appt.Subject}' start");
+					var (resolvedMasterEnd, _) = NormalizeOutlookTimes(master.End, master.EndUTC, $"master '{appt.Subject}' end");
+					masterStart = resolvedMasterStart;
+					masterEnd = resolvedMasterEnd;
+}
 					catch (COMException)
 					{
 						masterStart = null;
 						masterEnd = null;
 					}
 				}
-				else if (master != null)
-				{
-					masterStart = appt.Start;
-					masterEnd = appt.End;
-				}
+else if (master != null)
+{
+					masterStart = baseStartLocal;
+					masterEnd = baseEndLocal;
+}
 			}
 			catch (COMException)
 			{
@@ -1068,10 +1083,10 @@ public class CalendarSyncService : BackgroundService
 		{
 			if (pattern.PatternStartDate != DateTime.MinValue)
 			{
-				var startDate = pattern.PatternStartDate.Date;
-				var timeOfDay = pattern.StartTime != DateTime.MinValue
-					? pattern.StartTime.TimeOfDay
-					: (masterStart ?? appt.Start).TimeOfDay;
+			var startDate = pattern.PatternStartDate.Date;
+			var timeOfDay = pattern.StartTime != DateTime.MinValue
+? pattern.StartTime.TimeOfDay
+: (masterStart ?? baseStartLocal).TimeOfDay;
 				patternSeriesStart = startDate.Add(timeOfDay);
 			}
 		}
@@ -1086,7 +1101,7 @@ public class CalendarSyncService : BackgroundService
 			patternSeriesStart = null;
 		}
 
-		var seriesStart = patternSeriesStart ?? masterStart ?? appt.Start;
+		var seriesStart = patternSeriesStart ?? masterStart ?? baseStartLocal;
 
 		var baseDuration = TimeSpan.Zero;
 		if (pattern.StartTime != DateTime.MinValue && pattern.EndTime != DateTime.MinValue)
@@ -1109,30 +1124,33 @@ public class CalendarSyncService : BackgroundService
 
 		if (baseDuration <= TimeSpan.Zero && apptIsMaster)
 		{
-			var candidate = appt.End - appt.Start;
+			var candidate = baseEndUtc - baseStartUtc;
 			if (candidate > TimeSpan.Zero)
 			{
 				if (!hasPatternSeriesStart)
-					seriesStart = appt.Start;
+					seriesStart = baseStartLocal;
 				baseDuration = candidate;
 			}
 		}
 
 		if (baseDuration <= TimeSpan.Zero)
 		{
-			var candidate = appt.End - appt.Start;
+			var candidate = baseEndUtc - baseStartUtc;
 			if (candidate > TimeSpan.Zero)
 				baseDuration = candidate;
 		}
 
 		if (seriesStart == DateTime.MinValue || seriesStart.Year < 1900)
-			seriesStart = appt.Start;
+
+			seriesStart = baseStartLocal;
 
 		var seriesEnd = seriesStart.Add(baseDuration);
+		var seriesStartUtc = ConvertFromSourceLocalToUtc(seriesStart, $"series '{appt.Subject}' anchor start");
+		var seriesEndUtc = ConvertFromSourceLocalToUtc(seriesEnd, $"series '{appt.Subject}' anchor end");
 		var calEvent = new CalendarEvent
 		{
-			Start = new CalDateTime(seriesStart.ToUniversalTime()),
-			End = new CalDateTime(seriesEnd.ToUniversalTime()),
+			Start = new CalDateTime(seriesStartUtc),
+			End = new CalDateTime(seriesEndUtc),
 			RecurrenceRules = new List<RecurrencePattern> { rule }
 		};
 
@@ -1146,10 +1164,8 @@ public class CalendarSyncService : BackgroundService
 
 				if (ex.AppointmentItem != null)
 				{
-					var exStartLocal = ex.AppointmentItem.Start;
-					var exEndLocal = ex.AppointmentItem.End;
-					var exStartUtc = ex.AppointmentItem.StartUTC;
-					var exEndUtc = ex.AppointmentItem.EndUTC;
+					var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(ex.AppointmentItem.Start, ex.AppointmentItem.StartUTC, $"exception '{appt.Subject}' start");
+					var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(ex.AppointmentItem.End, ex.AppointmentItem.EndUTC, $"exception '{appt.Subject}' end");
 
 					if (exStartLocal >= from && exStartLocal <= to)
 					{
@@ -1163,14 +1179,14 @@ public class CalendarSyncService : BackgroundService
 		}
 
 		// Evaluate occurrences
-		var occurrences = calEvent.GetOccurrences(from.ToUniversalTime(), to.ToUniversalTime());
+		var occurrences = calEvent.GetOccurrences(ConvertFromSourceLocalToUtc(from), ConvertFromSourceLocalToUtc(to));
 
 		foreach (var occ in occurrences)
 		{
-			var startUtc = occ.Period.StartTime.AsUtc;
-			var endUtc = occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration);
-			var startLocal = TimeZoneInfo.ConvertTimeFromUtc(startUtc, TimeZoneInfo.Local);
-			var endLocal = TimeZoneInfo.ConvertTimeFromUtc(endUtc, TimeZoneInfo.Local);
+			var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
+			var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
+			var startLocal = ConvertUtcToSourceLocal(startUtc);
+			var endLocal = ConvertUtcToSourceLocal(endUtc);
 			if (skipDates.Contains(startLocal.Date))
 				continue;
 
@@ -1179,10 +1195,140 @@ public class CalendarSyncService : BackgroundService
 		}
 
 		return results;
+}
+
+
+	private OutlookEventDto EnsureEventConsistency(OutlookEventDto dto, string context)
+	{
+		var startUtc = dto.StartUtc == DateTime.MinValue
+			? ConvertFromSourceLocalToUtc(dto.StartLocal, $"{context} start fallback UTC")
+			: DateTime.SpecifyKind(dto.StartUtc, DateTimeKind.Utc);
+		var endUtc = dto.EndUtc == DateTime.MinValue
+			? ConvertFromSourceLocalToUtc(dto.EndLocal, $"{context} end fallback UTC")
+			: DateTime.SpecifyKind(dto.EndUtc, DateTimeKind.Utc);
+
+		var startLocal = DateTime.SpecifyKind(dto.StartLocal, DateTimeKind.Unspecified);
+		var expectedStartLocal = ConvertUtcToSourceLocal(startUtc);
+		if (Math.Abs((startLocal - expectedStartLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+		{
+			_logger.LogWarning("Adjusted start local time for {Context}. Computed {ComputedLocal:o} but found {StoredLocal:o}.", context, expectedStartLocal, startLocal);
+			startLocal = expectedStartLocal;
+		}
+
+		var endLocal = DateTime.SpecifyKind(dto.EndLocal, DateTimeKind.Unspecified);
+		var expectedEndLocal = ConvertUtcToSourceLocal(endUtc);
+		if (Math.Abs((endLocal - expectedEndLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+		{
+			_logger.LogWarning("Adjusted end local time for {Context}. Computed {ComputedLocal:o} but found {StoredLocal:o}.", context, expectedEndLocal, endLocal);
+			endLocal = expectedEndLocal;
+		}
+
+		CheckTargetAlignment($"{context} start", startLocal, startUtc);
+		CheckTargetAlignment($"{context} end", endLocal, endUtc);
+
+		return dto with { StartLocal = startLocal, EndLocal = endLocal, StartUtc = startUtc, EndUtc = endUtc };
 	}
 
-	private Outlook.Application CreateOutlookApplication(CancellationToken token)
+	private (DateTime local, DateTime utc) NormalizeOutlookTimes(DateTime localCandidate, DateTime utcCandidate, string context)
 	{
+		if (utcCandidate == DateTime.MinValue && localCandidate == DateTime.MinValue)
+		{
+			_logger.LogWarning("Outlook returned no timestamps for {Context}; leaving values unset.", context);
+			return (DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Unspecified), DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc));
+		}
+
+		DateTime normalizedUtc;
+		if (utcCandidate == DateTime.MinValue)
+		{
+			normalizedUtc = ConvertFromSourceLocalToUtc(localCandidate, $"{context} fallback UTC");
+		}
+		else
+		{
+			normalizedUtc = DateTime.SpecifyKind(utcCandidate, DateTimeKind.Utc);
+		}
+
+		var expectedLocal = ConvertUtcToSourceLocal(normalizedUtc);
+		DateTime normalizedLocal;
+		if (localCandidate == DateTime.MinValue)
+		{
+			normalizedLocal = expectedLocal;
+		}
+		else
+		{
+			var candidateLocal = DateTime.SpecifyKind(localCandidate, DateTimeKind.Unspecified);
+			if (Math.Abs((candidateLocal - expectedLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+			{
+				_logger.LogWarning("Detected timezone mismatch for {Context}: Outlook local {OutlookLocal:o} differed from computed {ComputedLocal:o}. Using UTC-derived value.", context, candidateLocal, expectedLocal);
+				normalizedLocal = expectedLocal;
+			}
+			else
+			{
+				normalizedLocal = candidateLocal;
+			}
+		}
+
+		CheckTargetAlignment(context, normalizedLocal, normalizedUtc);
+
+		return (normalizedLocal, normalizedUtc);
+	}
+	private DateTime ConvertFromSourceLocalToUtc(DateTime local, string? context = null)
+	{
+		var unspecifiedLocal = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+		var utc = TimeZoneInfo.ConvertTimeToUtc(unspecifiedLocal, _sourceTimeZone);
+		if (!string.IsNullOrEmpty(context))
+			CheckTargetAlignment(context, unspecifiedLocal, utc);
+		return DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+	}
+
+	private DateTime ConvertUtcToSourceLocal(DateTime utc, string? context = null)
+	{
+		var specifiedUtc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+		var local = TimeZoneInfo.ConvertTimeFromUtc(specifiedUtc, _sourceTimeZone);
+		var unspecifiedLocal = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+		if (!string.IsNullOrEmpty(context))
+			CheckTargetAlignment(context, unspecifiedLocal, specifiedUtc);
+		return unspecifiedLocal;
+	}
+
+	private void CheckTargetAlignment(string context, DateTime sourceLocal, DateTime utc)
+	{
+		var specifiedUtc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+		if (_sourceTimeZone.Id.Equals(_targetTimeZone.Id, StringComparison.OrdinalIgnoreCase))
+		{
+			var targetLocal = TimeZoneInfo.ConvertTimeFromUtc(specifiedUtc, _targetTimeZone);
+			if (Math.Abs((targetLocal - sourceLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+				_logger.LogWarning("Sanity check failed for {Context}: source timezone {SourceZone} local {SourceLocal:o} maps to {TargetLocal:o} in target timezone {TargetZone}.", context, _sourceTimeZone.Id, sourceLocal, targetLocal, _targetTimeZone.Id);
+		}
+	}
+
+	private TimeZoneInfo ResolveTimeZone(string? timeZoneId, string role)
+	{
+		if (string.IsNullOrWhiteSpace(timeZoneId))
+		{
+			_logger.LogInformation("Using local system timezone {TimeZone} for {Role} calendar.", TimeZoneInfo.Local.Id, role);
+			return TimeZoneInfo.Local;
+		}
+
+		try
+		{
+			var resolved = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId.Trim());
+			_logger.LogInformation("Using configured timezone {TimeZone} for {Role} calendar.", resolved.Id, role);
+			return resolved;
+		}
+		catch (TimeZoneNotFoundException)
+		{
+			_logger.LogWarning("Configured {Role} timezone '{TimeZoneId}' was not found. Falling back to local timezone {Fallback}.", role, timeZoneId, TimeZoneInfo.Local.Id);
+		}
+		catch (InvalidTimeZoneException)
+		{
+			_logger.LogWarning("Configured {Role} timezone '{TimeZoneId}' is invalid. Falling back to local timezone {Fallback}.", role, timeZoneId, TimeZoneInfo.Local.Id);
+		}
+
+		return TimeZoneInfo.Local;
+	}
+
+private Outlook.Application CreateOutlookApplication(CancellationToken token)
+{
 		EnsureOutlookProcessReady(token);
 		Outlook.Application? application = null;
 		COMException? lastServerException = null;

@@ -54,11 +54,15 @@ C:\CalendarSync\
     "SyncDaysIntoPast": 30,
     "LogLevel": "Information",
     "SourceId": "in_case_you_want_to_sync_from_multiple_calendars",
-	"EventTag": "this_marks_an_entry_with_a_prefix_e.g_ [COMPANY]"
+    "EventTag": "this_marks_an_entry_with_a_prefix_e.g_ [COMPANY]",
+    "SourceTimeZoneId": "Europe/Berlin",
+    "TargetTimeZoneId": "Europe/Berlin"
 }
 ```
 
 Use a browser Dev Tools or CalDAV client to retrieve `PrincipalId` and `WorkCalendarId`.
+
+`SourceTimeZoneId` and `TargetTimeZoneId` are optional. When omitted, the service falls back to the host operating system's local timezone for both the Outlook source and the iCloud destination.
 
 ### 2. Register as a Scheduled Task
 
