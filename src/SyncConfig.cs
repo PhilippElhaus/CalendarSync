@@ -14,4 +14,6 @@ public class SyncConfig
 	public int SyncDaysIntoPast { get; set; } = 30;
 	public string? SourceId { get; set; }
 	public string? EventTag { get; set; }
+	public string? SourceTimeZoneId { get; set; }
+	public string? TargetTimeZoneId { get; set; }
 }

@@ -10,5 +10,7 @@
 	"SyncDaysIntoPast": 30,
 	"LogLevel": "Information",
 	"SourceId": "",
-	"EventTag": ""
+        "EventTag": "",
+        "SourceTimeZoneId": "",
+        "TargetTimeZoneId": ""
 }
