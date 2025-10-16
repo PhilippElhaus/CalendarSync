@@ -21,8 +21,10 @@ public class CalendarSyncService : BackgroundService
 	string Subject,
 	string Body,
 	string Location,
-	DateTime Start,
-	DateTime End,
+	DateTime StartLocal,
+	DateTime EndLocal,
+	DateTime StartUtc,
+	DateTime EndUtc,
 	string GlobalId
 	);
 
@@ -438,9 +440,9 @@ public class CalendarSyncService : BackgroundService
 						var instances = ExpandRecurrenceManually(seriesItem, syncStart, syncEnd);
 						_logger.LogInformation("Expanded recurring series '{Subject}' to {Count} instances", seriesItem.Subject, instances.Count);
 
-						foreach (var (uid, start, end) in instances)
+						foreach (var (uid, startLocal, endLocal, startUtc, endUtc) in instances)
 						{
-							var dto = new OutlookEventDto(seriesItem.Subject, seriesItem.Body, seriesItem.Location, start, end, globalId);
+							var dto = new OutlookEventDto(seriesItem.Subject, seriesItem.Body, seriesItem.Location, startLocal, endLocal, startUtc, endUtc, globalId);
 							AddEventChunks(events, uid, dto);
 						}
 					}
@@ -458,10 +460,10 @@ public class CalendarSyncService : BackgroundService
 					continue;
 				}
 
-				// Single non-recurring event
-				var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
-				var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.GlobalAppointmentID);
-				AddEventChunks(events, uid_, dtoItem);
+					// Single non-recurring event
+					var uid_ = $"outlook-{appt.GlobalAppointmentID}-{appt.Start:yyyyMMddTHHmmss}";
+					var dtoItem = new OutlookEventDto(appt.Subject, appt.Body, appt.Location, appt.Start, appt.End, appt.StartUTC, appt.EndUTC, appt.GlobalAppointmentID);
+					AddEventChunks(events, uid_, dtoItem);
 			}
 			catch (Exception ex)
 			{
@@ -482,23 +484,25 @@ public class CalendarSyncService : BackgroundService
 
 	private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
 	{
-		var span = dto.End - dto.Start;
-		var isAllDay = dto.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-		(dto.End.TimeOfDay == TimeSpan.Zero || dto.End.TimeOfDay >= new TimeSpan(23, 59, 0));
+		var span = dto.EndLocal - dto.StartLocal;
+		var isAllDay = dto.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+			(dto.EndLocal.TimeOfDay == TimeSpan.Zero || dto.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
 
 		if (isAllDay)
 		{
-			var endDate = dto.End.TimeOfDay == TimeSpan.Zero ? dto.End.Date : dto.End.Date.AddDays(1);
-			var days = (endDate - dto.Start.Date).Days;
+			var endDate = dto.EndLocal.TimeOfDay == TimeSpan.Zero ? dto.EndLocal.Date : dto.EndLocal.Date.AddDays(1);
+			var days = (endDate - dto.StartLocal.Date).Days;
 
 			if (days > 1)
 			{
 				for (var i = 0; i < days; i++)
 				{
-					var dayStart = dto.Start.Date.AddDays(i);
-					var dayEnd = dayStart.AddDays(1);
-					var uid = $"{_sourceId}-{baseUid}-{dayStart:yyyyMMdd}";
-					var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStart, dayEnd, dto.GlobalId);
+					var dayStartLocal = dto.StartLocal.Date.AddDays(i);
+					var dayEndLocal = dayStartLocal.AddDays(1);
+					var dayStartUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(dayStartLocal, DateTimeKind.Local));
+					var dayEndUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(dayEndLocal, DateTimeKind.Local));
+					var uid = $"{_sourceId}-{baseUid}-{dayStartLocal:yyyyMMdd}";
+					var dayDto = new OutlookEventDto(dto.Subject, dto.Body, dto.Location, dayStartLocal, dayEndLocal, dayStartUtc, dayEndUtc, dto.GlobalId);
 					events[uid] = dayDto;
 				}
 				return;
@@ -507,6 +511,7 @@ public class CalendarSyncService : BackgroundService
 
 		events[$"{_sourceId}-{baseUid}"] = dto;
 	}
+
 
 	private Dictionary<string, OutlookEventDto> DeduplicateEvents(Dictionary<string, OutlookEventDto> events)
 	{
@@ -519,11 +524,11 @@ public class CalendarSyncService : BackgroundService
 				continue;
 
 			var globalId = dto.GlobalId ?? string.Empty;
-			var signature = $"{globalId}|{dto.Start.ToUniversalTime():O}|{dto.End.ToUniversalTime():O}";
+			var signature = $"{globalId}|{dto.StartUtc:O}|{dto.EndUtc:O}";
 
 			if (!seenKeys.Add(signature))
 			{
-				_logger.LogWarning("Detected duplicate Outlook event for GlobalID {GlobalId} at {Start}. Dropping UID {Uid}.", globalId, dto.Start, uid);
+				_logger.LogWarning("Detected duplicate Outlook event for GlobalID {GlobalId} at {Start}. Dropping UID {Uid}.", globalId, dto.StartLocal, uid);
 				continue;
 			}
 
@@ -736,18 +741,19 @@ public class CalendarSyncService : BackgroundService
 
 	private (DateTime start, DateTime end, bool isAllDay) GetExpectedTimes(OutlookEventDto dto)
 	{
-		var span = dto.End - dto.Start;
-		var isAllDay = dto.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-			(dto.End.TimeOfDay == TimeSpan.Zero || dto.End.TimeOfDay >= new TimeSpan(23, 59, 0));
+		var span = dto.EndLocal - dto.StartLocal;
+		var isAllDay = dto.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+			(dto.EndLocal.TimeOfDay == TimeSpan.Zero || dto.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
 
 		if (isAllDay)
 		{
-			var endDate = dto.End.TimeOfDay == TimeSpan.Zero ? dto.End.Date : dto.End.Date.AddDays(1);
-			return (dto.Start.Date, endDate, true);
+			var endDate = dto.EndLocal.TimeOfDay == TimeSpan.Zero ? dto.EndLocal.Date : dto.EndLocal.Date.AddDays(1);
+			return (dto.StartLocal.Date, endDate, true);
 		}
 
-		return (dto.Start.ToUniversalTime(), dto.End.ToUniversalTime(), false);
+		return (dto.StartUtc, dto.EndUtc, false);
 	}
+
 
 	private static (DateTime start, DateTime end, bool isAllDay) GetActualTimes(CalendarEvent calEvent)
 	{
@@ -844,20 +850,20 @@ public class CalendarSyncService : BackgroundService
 		CalDateTime end;
 
 		// Convert 24h+ spans starting at midnight to all-day events
-		var span = appt.End - appt.Start;
-		var isAllDay = appt.Start.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-		(appt.End.TimeOfDay == TimeSpan.Zero || appt.End.TimeOfDay >= new TimeSpan(23, 59, 0));
+		var span = appt.EndLocal - appt.StartLocal;
+		var isAllDay = appt.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
+			(appt.EndLocal.TimeOfDay == TimeSpan.Zero || appt.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
 
 		if (isAllDay)
 		{
-			start = new CalDateTime(appt.Start.Date, tzId: null, hasTime: false);
-			var endDate = appt.End.TimeOfDay == TimeSpan.Zero ? appt.End.Date : appt.End.Date.AddDays(1);
+			start = new CalDateTime(appt.StartLocal.Date, tzId: null, hasTime: false);
+			var endDate = appt.EndLocal.TimeOfDay == TimeSpan.Zero ? appt.EndLocal.Date : appt.EndLocal.Date.AddDays(1);
 			end = new CalDateTime(endDate, tzId: null, hasTime: false);
 		}
 		else
 		{
-			start = new CalDateTime(appt.Start.ToUniversalTime());
-			end = new CalDateTime(appt.End.ToUniversalTime());
+			start = new CalDateTime(appt.StartUtc);
+			end = new CalDateTime(appt.EndUtc);
 		}
 
 		var calEvent = new CalendarEvent
@@ -928,9 +934,9 @@ public class CalendarSyncService : BackgroundService
 			_logger.LogError("Retry failed for {Method} {Url}: {Status} - {Reason}", original.Method, original.RequestUri, retryResponse.StatusCode, retryResponse.ReasonPhrase);
 	}
 
-	private List<(string uid, DateTime start, DateTime end)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
+	private List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
 	{
-		var results = new List<(string uid, DateTime start, DateTime end)>();
+		var results = new List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)>();
 
 		Outlook.RecurrencePattern pattern;
 		try
@@ -1140,14 +1146,16 @@ public class CalendarSyncService : BackgroundService
 
 				if (ex.AppointmentItem != null)
 				{
-					var exStart = ex.AppointmentItem.Start;
-					var exEnd = ex.AppointmentItem.End;
+					var exStartLocal = ex.AppointmentItem.Start;
+					var exEndLocal = ex.AppointmentItem.End;
+					var exStartUtc = ex.AppointmentItem.StartUTC;
+					var exEndUtc = ex.AppointmentItem.EndUTC;
 
-					if (exStart >= from && exStart <= to)
+					if (exStartLocal >= from && exStartLocal <= to)
 					{
-						var exUid = $"outlook-{appt.GlobalAppointmentID}-{exStart:yyyyMMddTHHmmss}";
-						results.Add((exUid, exStart, exEnd));
-						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStart);
+						var exUid = $"outlook-{appt.GlobalAppointmentID}-{exStartLocal:yyyyMMddTHHmmss}";
+						results.Add((exUid, exStartLocal, exEndLocal, exStartUtc, exEndUtc));
+						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
 					}
 				}
 			}
@@ -1159,13 +1167,15 @@ public class CalendarSyncService : BackgroundService
 
 		foreach (var occ in occurrences)
 		{
-			var start = occ.Period.StartTime.Value.ToLocalTime();
-			if (skipDates.Contains(start.Date))
+			var startUtc = occ.Period.StartTime.AsUtc;
+			var endUtc = occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration);
+			var startLocal = TimeZoneInfo.ConvertTimeFromUtc(startUtc, TimeZoneInfo.Local);
+			var endLocal = TimeZoneInfo.ConvertTimeFromUtc(endUtc, TimeZoneInfo.Local);
+			if (skipDates.Contains(startLocal.Date))
 				continue;
 
-			var end = start.Add(baseDuration);
-			var uid = $"outlook-{appt.GlobalAppointmentID}-{start:yyyyMMddTHHmmss}";
-			results.Add((uid, start, end));
+			var uid = $"outlook-{appt.GlobalAppointmentID}-{startLocal:yyyyMMddTHHmmss}";
+			results.Add((uid, startLocal, endLocal, startUtc, endUtc));
 		}
 
 		return results;
