@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text;
 using Ical.Net;
 using Ical.Net.CalendarComponents;
+using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 

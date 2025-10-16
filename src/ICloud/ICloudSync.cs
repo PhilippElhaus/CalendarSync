@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using Ical.Net;
 using Ical.Net.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 

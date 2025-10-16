@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Win32;
 using Outlook = Microsoft.Office.Interop.Outlook;
+using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 

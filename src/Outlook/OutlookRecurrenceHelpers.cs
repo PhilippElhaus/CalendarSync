@@ -3,6 +3,7 @@ using Ical.Net;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Outlook = Microsoft.Office.Interop.Outlook;
+using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 
