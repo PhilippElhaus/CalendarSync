@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace CalendarSync.src;
+namespace CalendarSync;
 
 public sealed class TrayIconManager : IDisposable
 {

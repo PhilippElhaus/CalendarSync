@@ -1,4 +1,4 @@
-namespace CalendarSync.src;
+namespace CalendarSync;
 
 public class SyncConfig
 {

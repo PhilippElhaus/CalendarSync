@@ -4,7 +4,7 @@ using System.Text;
 using Ical.Net;
 using Ical.Net.CalendarComponents;
 
-namespace CalendarSync.src;
+namespace CalendarSync;
 
 public partial class CalendarSyncService
 {

@@ -5,7 +5,7 @@ using System.Threading;
 using Ical.Net;
 using Ical.Net.Serialization;
 
-namespace CalendarSync.src;
+namespace CalendarSync;
 
 public partial class CalendarSyncService
 {

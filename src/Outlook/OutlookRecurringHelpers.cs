@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
-namespace CalendarSync.src;
+namespace CalendarSync;
 
 public partial class CalendarSyncService
 {

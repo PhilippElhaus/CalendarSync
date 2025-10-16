@@ -4,7 +4,7 @@ using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
-namespace CalendarSync.src;
+namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
