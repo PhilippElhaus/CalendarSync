@@ -2,7 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace CalendarSync.src;
+namespace CalendarSync;
 
 public static class StaTask
 {
