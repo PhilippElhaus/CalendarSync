@@ -8,27 +8,27 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
-	{
-		var results = new List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)>();
-
-		var pattern = TryGetRecurrencePattern(appt);
-		if (pattern == null)
+	private List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
 		{
-			return results;
-		}
+			var results = new List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)>();
 
-		var rule = BuildRecurrenceRule(pattern, appt.Subject);
-		if (rule == null)
-		{
-			return results;
-		}
+			var pattern = TryGetRecurrencePattern(appt);
+			if (pattern == null)
+			{
+				return results;
+			}
 
-		var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"series '{appt.Subject}' start");
-		var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
+			var rule = BuildRecurrenceRule(pattern, appt.Subject);
+			if (rule == null)
+			{
+				return results;
+			}
 
-		var (_, masterStart, masterEnd, apptIsMaster) = ResolveSeriesContext(appt, pattern, baseStartLocal, baseEndLocal);
-		var (calEvent, baseDuration) = CreateRecurrenceCalendarEvent(
+			var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"series '{appt.Subject}' start");
+			var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
+
+			var (_, masterStart, masterEnd, apptIsMaster) = ResolveSeriesContext(appt, pattern, baseStartLocal, baseEndLocal);
+			var (calEvent, baseDuration) = CreateRecurrenceCalendarEvent(
 			rule,
 			baseStartLocal,
 			baseStartUtc,
@@ -39,12 +39,12 @@ public partial class CalendarSyncService
 			appt,
 			apptIsMaster);
 
-		var skipDates = new HashSet<DateTime>();
-		ProcessRecurrenceExceptions(pattern, appt, from, to, results, skipDates);
+			var skipDates = new HashSet<DateTime>();
+			ProcessRecurrenceExceptions(pattern, appt, from, to, results, skipDates);
 
-		var occurrences = calEvent.GetOccurrences(ConvertFromSourceLocalToUtc(from), ConvertFromSourceLocalToUtc(to));
-		AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration);
+			var occurrences = calEvent.GetOccurrences(ConvertFromSourceLocalToUtc(from), ConvertFromSourceLocalToUtc(to));
+			AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, appt.AllDayEvent);
 
-		return results;
+			return results;
+		}
 	}
-}

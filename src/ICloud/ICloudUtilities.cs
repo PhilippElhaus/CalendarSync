@@ -55,80 +55,92 @@ _logger.LogInformation("Parsed {Count} events from PROPFIND response.", events.C
 return events;
 }
 
-private CalendarEvent CreateCalendarEvent(OutlookEventDto appt, string uid)
-{
-	var summary = appt.Subject ?? "No Subject";
-	if (!string.IsNullOrEmpty(_tag))
-	summary = $"[{_tag}] {summary}";
+	private CalendarEvent CreateCalendarEvent(OutlookEventDto appt, string uid)
+		{
+			var summary = appt.Subject ?? "No Subject";
+			if (!string.IsNullOrEmpty(_tag))
+			{
+				summary = $"[{_tag}] {summary}";
+			}
 
-	CalDateTime start;
-	CalDateTime end;
+			CalDateTime start;
+			CalDateTime end;
 
-	var span = appt.EndLocal - appt.StartLocal;
-	var isAllDay = appt.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-	(appt.EndLocal.TimeOfDay == TimeSpan.Zero || appt.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
+			var isAllDay = DetermineAllDay(appt.StartLocal, appt.EndLocal, appt.IsAllDay);
 
-	if (isAllDay)
-	{
-		var startDate = appt.StartLocal.Date;
-		var endLocalDate = appt.EndLocal.TimeOfDay == TimeSpan.Zero ? appt.EndLocal.Date : appt.EndLocal.Date.AddDays(1);
-		start = new CalDateTime(startDate.Year, startDate.Month, startDate.Day);
-		end = new CalDateTime(endLocalDate.Year, endLocalDate.Month, endLocalDate.Day);
+			if (isAllDay)
+			{
+				var (startDate, endDate) = GetAllDayDateRange(appt.StartLocal, appt.EndLocal);
+				start = new CalDateTime(startDate.Year, startDate.Month, startDate.Day) { IsAllDay = true };
+				end = new CalDateTime(endDate.Year, endDate.Month, endDate.Day) { IsAllDay = true };
+			}
+			else
+			{
+				start = new CalDateTime(appt.StartUtc) { IsUniversalTime = true };
+				end = new CalDateTime(appt.EndUtc) { IsUniversalTime = true };
+			}
+
+			var calEvent = new CalendarEvent
+			{
+				Summary = summary,
+				Start = start,
+				End = end,
+				Location = appt.Location ?? string.Empty,
+				Uid = uid,
+				Description = appt.Body ?? string.Empty,
+			};
+
+			calEvent.IsAllDay = isAllDay;
+
+			if (!isAllDay)
+			{
+				calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
+				calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
+			}
+
+			return calEvent;
+		}
+
+	private HttpClient CreateHttpClient()
+		{
+			var client = new HttpClient();
+			client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+			"Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_config.ICloudUser}:{_config.ICloudPassword}")));
+			client.DefaultRequestHeaders.Add("User-Agent", "CalendarSyncService");
+			return client;
+		}
+
+	private bool IsManagedUid(string? uid)
+		{
+			if (string.IsNullOrWhiteSpace(uid))
+			{
+				return false;
+			}
+
+			var normalized = uid.Trim();
+			var prefixes = new List<string>();
+
+			if (!string.IsNullOrEmpty(_sourceId))
+			{
+				prefixes.Add($"{_sourceId}-outlook-");
+			}
+
+			prefixes.Add("-outlook-");
+			prefixes.Add("outlook-");
+
+			foreach (var prefix in prefixes)
+			{
+				if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+			}
+
+			if (!string.IsNullOrEmpty(_sourceId) && normalized.StartsWith($"{_sourceId}-", StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+
+			return false;
+		}
 	}
-else
-{
-	start = new CalDateTime(appt.StartUtc);
-	end = new CalDateTime(appt.EndUtc);
-}
-
-var calEvent = new CalendarEvent
-{
-	Summary = summary,
-	Start = start,
-	End = end,
-	Location = appt.Location ?? string.Empty,
-	Uid = uid,
-	Description = appt.Body ?? string.Empty,
-};
-
-if (!isAllDay)
-{
-	calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
-	calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
-}
-
-return calEvent;
-}
-
-private HttpClient CreateHttpClient()
-{
-	var client = new HttpClient();
-	client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-	"Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_config.ICloudUser}:{_config.ICloudPassword}")));
-	client.DefaultRequestHeaders.Add("User-Agent", "CalendarSyncService");
-	return client;
-}
-
-private bool IsManagedUid(string? uid)
-{
-	if (string.IsNullOrWhiteSpace(uid))
-	return false;
-
-	var normalized = uid.Trim();
-	var prefixes = new List<string>();
-
-	if (!string.IsNullOrEmpty(_sourceId))
-	prefixes.Add($"{_sourceId}-outlook-");
-
-	prefixes.Add("-outlook-");
-	prefixes.Add("outlook-");
-
-	foreach (var prefix in prefixes)
-	{
-		if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-		return true;
-	}
-
-return false;
-}
-}
