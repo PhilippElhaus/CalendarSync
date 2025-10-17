@@ -22,9 +22,9 @@ public partial class CalendarSyncService
 
 	try
 	{
-		var response = await client.SendAsync(request);
+		var response = await client.SendAsync(request).ConfigureAwait(false);
 		response.EnsureSuccessStatusCode();
-		var content = await response.Content.ReadAsStringAsync();
+		var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 		var document = XDocument.Parse(content);
 
 		XNamespace dav = "DAV:";
@@ -71,13 +71,13 @@ return events;
 			if (isAllDay)
 			{
 				var (startDate, endDate) = GetAllDayDateRange(appt.StartLocal, appt.EndLocal);
-				start = new CalDateTime(startDate.Year, startDate.Month, startDate.Day) { IsAllDay = true };
-				end = new CalDateTime(endDate.Year, endDate.Month, endDate.Day) { IsAllDay = true };
+				start = new CalDateTime(startDate);
+				end = new CalDateTime(endDate);
 			}
 			else
 			{
-				start = new CalDateTime(appt.StartUtc) { IsUniversalTime = true };
-				end = new CalDateTime(appt.EndUtc) { IsUniversalTime = true };
+				start = new CalDateTime(appt.StartUtc, CalDateTime.UtcTzId);
+				end = new CalDateTime(appt.EndUtc, CalDateTime.UtcTzId);
 			}
 
 			var calEvent = new CalendarEvent
@@ -90,9 +90,7 @@ return events;
 				Description = appt.Body ?? string.Empty,
 			};
 
-			calEvent.IsAllDay = isAllDay;
-
-			if (!isAllDay)
+				if (!isAllDay)
 			{
 				calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
 				calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });

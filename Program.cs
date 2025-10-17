@@ -4,6 +4,7 @@ using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
 using System.Diagnostics;
+using System.Windows.Forms;
 
 namespace CalendarSync;
 
@@ -26,15 +27,15 @@ public class Program
 		tray.ExitClicked += async (_, _) =>
 		{
 			EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
-			await host.StopAsync();
+			await host.StopAsync().ConfigureAwait(false);
 			tray.Dispose();
 			Application.Exit();
 		};
 
-                tray.FullResyncClicked += async (_, _) =>
-                {
-                        await service.TriggerFullResyncAsync();
-                };
+		tray.FullResyncClicked += async (_, _) =>
+		{
+			await service.TriggerFullResyncAsync().ConfigureAwait(false);
+		};
 
 		host.StartAsync().GetAwaiter().GetResult();
 		Application.Run();
