@@ -17,7 +17,8 @@ public partial class CalendarSyncService : BackgroundService
 	DateTime EndLocal,
 	DateTime StartUtc,
 	DateTime EndUtc,
-	string GlobalId
+	string GlobalId,
+	bool IsAllDay
 	);
 
 	private readonly SyncConfig _config;
@@ -25,6 +26,7 @@ public partial class CalendarSyncService : BackgroundService
 	private readonly TrayIconManager _tray;
 	private static bool _isFirstRun = true;
 	private const double TimezoneSanityToleranceMinutes = 1;
+	private const double AllDayToleranceMinutes = 5;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
 	private readonly string _sourceId;

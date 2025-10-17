@@ -301,58 +301,61 @@ public partial class CalendarSyncService
 	}
 
 	private void ProcessRecurrenceExceptions(
-	Outlook.RecurrencePattern pattern,
-	Outlook.AppointmentItem appt,
-	DateTime from,
-	DateTime to,
-	List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)> results,
-	HashSet<DateTime> skipDates)
-	{
-		foreach (Outlook.Exception ex in pattern.Exceptions)
+		Outlook.RecurrencePattern pattern,
+		Outlook.AppointmentItem appt,
+		DateTime from,
+		DateTime to,
+		List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)> results,
+		HashSet<DateTime> skipDates)
 		{
-			try
+			foreach (Outlook.Exception ex in pattern.Exceptions)
 			{
-				skipDates.Add(ex.OriginalDate.Date);
-
-				if (ex.AppointmentItem != null)
+				try
 				{
-					var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(ex.AppointmentItem.Start, ex.AppointmentItem.StartUTC, $"exception '{appt.Subject}' start");
-					var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(ex.AppointmentItem.End, ex.AppointmentItem.EndUTC, $"exception '{appt.Subject}' end");
+					skipDates.Add(ex.OriginalDate.Date);
 
-					if (exStartLocal >= from && exStartLocal <= to)
+					if (ex.AppointmentItem != null)
 					{
-						var exUid = $"outlook-{appt.GlobalAppointmentID}-{exStartLocal:yyyyMMddTHHmmss}";
-						results.Add((exUid, exStartLocal, exEndLocal, exStartUtc, exEndUtc));
-						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
+						var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(ex.AppointmentItem.Start, ex.AppointmentItem.StartUTC, $"exception '{appt.Subject}' start");
+						var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(ex.AppointmentItem.End, ex.AppointmentItem.EndUTC, $"exception '{appt.Subject}' end");
+
+						if (exStartLocal >= from && exStartLocal <= to)
+						{
+							var exUid = $"outlook-{appt.GlobalAppointmentID}-{exStartLocal:yyyyMMddTHHmmss}";
+							var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, ex.AppointmentItem?.AllDayEvent ?? appt.AllDayEvent);
+							results.Add((exUid, exStartLocal, exEndLocal, exStartUtc, exEndUtc, exAllDay));
+							_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
+						}
 					}
 				}
-			}
-			catch
-			{
+				catch
+				{
+				}
 			}
 		}
-	}
 
 	private void AddCalculatedOccurrences(
-	List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc)> results,
-	Outlook.AppointmentItem appt,
-	IEnumerable<Occurrence> occurrences,
-	HashSet<DateTime> skipDates,
-	TimeSpan baseDuration)
-	{
-		foreach (var occ in occurrences)
+		List<(string uid, DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)> results,
+		Outlook.AppointmentItem appt,
+		IEnumerable<Occurrence> occurrences,
+		HashSet<DateTime> skipDates,
+		TimeSpan baseDuration,
+		bool seriesAllDay)
 		{
-			var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
-			var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
-			var startLocal = ConvertUtcToSourceLocal(startUtc);
-			var endLocal = ConvertUtcToSourceLocal(endUtc);
-			if (skipDates.Contains(startLocal.Date))
+			foreach (var occ in occurrences)
 			{
-				continue;
-			}
+				var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
+				var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
+				var startLocal = ConvertUtcToSourceLocal(startUtc);
+				var endLocal = ConvertUtcToSourceLocal(endUtc);
+				if (skipDates.Contains(startLocal.Date))
+				{
+					continue;
+				}
 
-			var uid = $"outlook-{appt.GlobalAppointmentID}-{startLocal:yyyyMMddTHHmmss}";
-			results.Add((uid, startLocal, endLocal, startUtc, endUtc));
+				var uid = $"outlook-{appt.GlobalAppointmentID}-{startLocal:yyyyMMddTHHmmss}";
+				var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
+				results.Add((uid, startLocal, endLocal, startUtc, endUtc, occAllDay));
+			}
 		}
 	}
-}
