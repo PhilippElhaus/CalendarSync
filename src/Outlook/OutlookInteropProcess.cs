@@ -88,7 +88,7 @@ public partial class CalendarSyncService
 
 		try
 		{
-			using var key = Registry.LocalMachine.OpenSubKey("SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE");
+			using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE");
 			var value = key?.GetValue(string.Empty) as string;
 			if (string.IsNullOrWhiteSpace(value))
 			{

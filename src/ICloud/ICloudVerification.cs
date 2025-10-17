@@ -7,6 +7,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Ical.Net;
 using Ical.Net.CalendarComponents;
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 

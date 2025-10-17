@@ -5,8 +5,11 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using Ical.Net;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
+using Microsoft.Extensions.Logging;
+
 
 namespace CalendarSync;
 
@@ -15,7 +18,8 @@ public partial class CalendarSyncService
 	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl, bool filterBySource)
 	{
 		var events = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		const string requestBody = "<?xml version="1.0" encoding="UTF-8"?><d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/"><d:prop><d:getetag/><cs:getctag/></d:prop></d:propfind>";
+		const string requestBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><d:propfind xmlns:d=\"DAV:\" xmlns:cs=\"http://calendarserver.org/ns/\"><d:prop><d:getetag/><cs:getctag/></d:prop></d:propfind>";
+
 		using var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), calendarUrl)
 		{
 			Content = new StringContent(requestBody, Encoding.UTF8, "application/xml")
@@ -77,8 +81,8 @@ public partial class CalendarSyncService
 		if (isAllDay)
 		{
 			var (startDate, endDate) = GetAllDayDateRange(appt.StartLocal, appt.EndLocal);
-			start = new CalDateTime(startDate) { IsAllDay = true };
-			end = new CalDateTime(endDate) { IsAllDay = true };
+			start = new CalDateTime(startDate, false);
+			end = new CalDateTime(endDate, false);
 		}
 		else
 		{
