@@ -53,8 +53,7 @@ public partial class CalendarSyncService
 		{
 			Start = startCal,
 			End = endCal,
-			RecurrenceRules = new List<RecurrencePattern> { rule },
-			Duration = BuildDuration(baseDuration)
+			RecurrenceRules = new List<RecurrencePattern> { rule }
 		};
 
 		var skipDates = new HashSet<DateTime>();
@@ -68,27 +67,5 @@ public partial class CalendarSyncService
 		return results;
 	}
 
-	private static Duration BuildDuration(TimeSpan span)
-	{
-		int? weeks = null;
-		int? days = null;
-		if (span.Days > 0)
-		{
-			var isWholeWeeks = span.Days % 7 == 0 && span.Hours == 0 && span.Minutes == 0 && span.Seconds == 0;
-			if (isWholeWeeks)
-			{
-				weeks = span.Days / 7;
-			}
-			else
-			{
-				days = span.Days;
-			}
-		}
-
-		int? hours = span.Hours != 0 ? span.Hours : null;
-		int? minutes = span.Minutes != 0 ? span.Minutes : null;
-		int? seconds = span.Seconds != 0 ? span.Seconds : null;
-
-		return new Duration(weeks, days, hours, minutes, seconds);
-	}
+	
 }
