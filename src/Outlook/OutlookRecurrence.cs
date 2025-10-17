@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Ical.Net;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
+using Microsoft.Extensions.Logging;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync;
@@ -39,13 +40,13 @@ public partial class CalendarSyncService
 		if (seriesAllDay)
 		{
 			var (startDate, endDate) = GetAllDayDateRange(baseStartLocal, baseEndLocal);
-			startCal = new CalDateTime(startDate.Year, startDate.Month, startDate.Day) { IsAllDay = true };
-			endCal = new CalDateTime(endDate.Year, endDate.Month, endDate.Day) { IsAllDay = true };
+			startCal = new CalDateTime(startDate, false);
+			endCal = new CalDateTime(endDate, false);
 		}
 		else
 		{
-			startCal = new CalDateTime(baseStartUtc) { IsUniversalTime = true };
-			endCal = new CalDateTime(baseEndUtc) { IsUniversalTime = true };
+			startCal = new CalDateTime(baseStartUtc, CalDateTime.UtcTzId);
+			endCal = new CalDateTime(baseEndUtc, CalDateTime.UtcTzId);
 		}
 
 		var calEvent = new CalendarEvent
@@ -53,7 +54,7 @@ public partial class CalendarSyncService
 			Start = startCal,
 			End = endCal,
 			RecurrenceRules = new List<RecurrencePattern> { rule },
-			IsAllDay = seriesAllDay
+			Duration = BuildDuration(baseDuration)
 		};
 
 		var skipDates = new HashSet<DateTime>();
@@ -65,5 +66,29 @@ public partial class CalendarSyncService
 		AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, seriesAllDay);
 
 		return results;
+	}
+
+	private static Duration BuildDuration(TimeSpan span)
+	{
+		int? weeks = null;
+		int? days = null;
+		if (span.Days > 0)
+		{
+			var isWholeWeeks = span.Days % 7 == 0 && span.Hours == 0 && span.Minutes == 0 && span.Seconds == 0;
+			if (isWholeWeeks)
+			{
+				weeks = span.Days / 7;
+			}
+			else
+			{
+				days = span.Days;
+			}
+		}
+
+		int? hours = span.Hours != 0 ? span.Hours : null;
+		int? minutes = span.Minutes != 0 ? span.Minutes : null;
+		int? seconds = span.Seconds != 0 ? span.Seconds : null;
+
+		return new Duration(weeks, days, hours, minutes, seconds);
 	}
 }
