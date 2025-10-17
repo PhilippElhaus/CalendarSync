@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -10,15 +12,15 @@ namespace CalendarSync;
 public partial class CalendarSyncService : BackgroundService
 {
 	private record OutlookEventDto(
-	string Subject,
-	string Body,
-	string Location,
-	DateTime StartLocal,
-	DateTime EndLocal,
-	DateTime StartUtc,
-	DateTime EndUtc,
-	string GlobalId,
-	bool IsAllDay
+		string Subject,
+		string Body,
+		string Location,
+		DateTime StartLocal,
+		DateTime EndLocal,
+		DateTime StartUtc,
+		DateTime EndUtc,
+		string GlobalId,
+		bool IsAllDay
 	);
 
 	private readonly SyncConfig _config;
@@ -56,138 +58,138 @@ public partial class CalendarSyncService : BackgroundService
 		if (!_sourceTimeZone.Id.Equals(_targetTimeZone.Id, StringComparison.OrdinalIgnoreCase))
 		{
 			_logger.LogInformation(
-			"Source timezone {Source} and target timezone {Target} differ; synchronizing via UTC conversions.",
-			_sourceTimeZone.Id,
-			_targetTimeZone.Id);
+				"Source timezone {Source} and target timezone {Target} differ; synchronizing via UTC conversions.",
+				_sourceTimeZone.Id,
+				_targetTimeZone.Id);
 		}
-}
+	}
 
-protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-{
-	_serviceStoppingToken = stoppingToken;
-	_logger.LogInformation("Calendar Sync Service started.");
-	EventRecorder.WriteEntry("Service started", EventLogEntryType.Information);
-
-	_logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
-	await Task.Delay(_initialWait, stoppingToken);
-
-	while (!stoppingToken.IsCancellationRequested)
+	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
-		_currentOpCts = new CancellationTokenSource();
-		await _opLock.WaitAsync(stoppingToken);
-		var token = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _currentOpCts.Token).Token;
+		_serviceStoppingToken = stoppingToken;
+		_logger.LogInformation("Calendar Sync Service started.");
+		EventRecorder.WriteEntry("Service started", EventLogEntryType.Information);
+
+		_logger.LogInformation("Initial wait for {InitialWait} seconds before starting sync.", _initialWait.TotalSeconds);
+		await Task.Delay(_initialWait, stoppingToken).ConfigureAwait(false);
+
+		while (!stoppingToken.IsCancellationRequested)
+		{
+			_currentOpCts = new CancellationTokenSource();
+			await _opLock.WaitAsync(stoppingToken).ConfigureAwait(false);
+			var token = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _currentOpCts.Token).Token;
+
+			try
+			{
+				await PerformSyncAsync(token).ConfigureAwait(false);
+			}
+			catch (Exception ex)
+			{
+				_logger.LogError(ex, "Unexpected error during sync. Continuing to next cycle.");
+			}
+			finally
+			{
+				_opLock.Release();
+			}
+
+			_logger.LogDebug("Waiting for next sync cycle.");
+			await Task.Delay(_syncInterval, stoppingToken).ConfigureAwait(false);
+		}
+
+		_logger.LogInformation("Calendar Sync Service stopped.");
+		EventRecorder.WriteEntry("Service stopped", EventLogEntryType.Information);
+	}
+
+	private async Task PerformSyncAsync(CancellationToken stoppingToken)
+	{
+		EventRecorder.WriteEntry("Sync started", EventLogEntryType.Information);
+		_tray.SetUpdating();
+		_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
 
 		try
 		{
-			await PerformSyncAsync(token);
+			var outlookEvents = await FetchOutlookEventsAsync(stoppingToken).ConfigureAwait(false);
+
+			using var client = CreateHttpClient();
+			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+
+			if (_isFirstRun)
+			{
+				_logger.LogInformation("First run detected, initiating wipe.");
+				await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken, true).ConfigureAwait(false);
+				_isFirstRun = false;
+				_tray.SetUpdating();
+			}
+
+			await SyncWithICloudAsync(client, outlookEvents, stoppingToken).ConfigureAwait(false);
+
+			EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
 		}
-	catch (Exception ex)
-	{
-		_logger.LogError(ex, "Unexpected error during sync. Continuing to next cycle.");
-	}
-finally
-{
-	_opLock.Release();
-}
-
-_logger.LogDebug("Waiting for next sync cycle.");
-await Task.Delay(_syncInterval, stoppingToken);
-}
-
-_logger.LogInformation("Calendar Sync Service stopped.");
-EventRecorder.WriteEntry("Service stopped", EventLogEntryType.Information);
-}
-
-private async Task PerformSyncAsync(CancellationToken stoppingToken)
-{
-	EventRecorder.WriteEntry("Sync started", EventLogEntryType.Information);
-	_tray.SetUpdating();
-	_logger.LogInformation("Starting sync at {Time}", DateTime.Now);
-
-	try
-	{
-		var outlookEvents = await FetchOutlookEventsAsync(stoppingToken);
-
-		using var client = CreateHttpClient();
-		var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
-
-		if (_isFirstRun)
+		catch (UnauthorizedAccessException ex)
 		{
-			_logger.LogInformation("First run detected, initiating wipe.");
-			await WipeICloudCalendarAsync(client, calendarUrl, stoppingToken, true);
-			_isFirstRun = false;
-			_tray.SetUpdating();
+			_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
+			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
+			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+		}
+		catch (OperationCanceledException ex)
+		{
+			if (_serviceStoppingToken.IsCancellationRequested)
+			{
+				_logger.LogInformation("Sync canceled because the service is stopping.");
+			}
+			else if (_currentOpCts.IsCancellationRequested)
+			{
+				_logger.LogInformation("Sync canceled in preparation for a manual full re-sync.");
+			}
+			else
+			{
+				_logger.LogError(ex, "Outlook operation timed out.");
+				EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
+			}
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
+		}
+		finally
+		{
+			_tray.SetIdle();
 		}
 
-	await SyncWithICloudAsync(client, outlookEvents, stoppingToken);
-
-	EventRecorder.WriteEntry("Sync finished", EventLogEntryType.Information);
-}
-catch (UnauthorizedAccessException ex)
-{
-	_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
-	EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
-	MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
-}
-catch (OperationCanceledException ex)
-{
-	if (_serviceStoppingToken.IsCancellationRequested)
-	{
-		_logger.LogInformation("Sync canceled because the service is stopping.");
+		_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
 	}
-else if (_currentOpCts.IsCancellationRequested)
-{
-	_logger.LogInformation("Sync canceled in preparation for a manual full re-sync.");
-}
-else
-{
-	_logger.LogError(ex, "Outlook operation timed out.");
-	EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
-}
-}
-catch (Exception ex)
-{
-	_logger.LogError(ex, "Error during sync processing. Skipping this cycle.");
-}
-finally
-{
-	_tray.SetIdle();
-}
 
-_logger.LogInformation("Sync completed at {Time}", DateTime.Now);
-}
-
-public async Task TriggerFullResyncAsync()
-{
-	EventRecorder.WriteEntry("Manual full re-sync requested", EventLogEntryType.Information);
-	_currentOpCts.Cancel();
-	await _opLock.WaitAsync();
-
-	try
+	public async Task TriggerFullResyncAsync()
 	{
-		_currentOpCts = new CancellationTokenSource();
-		using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_currentOpCts.Token, _serviceStoppingToken);
-		var token = linkedCts.Token;
-		using var client = CreateHttpClient();
-		var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
-		await WipeICloudCalendarAsync(client, calendarUrl, token, false);
-		token.ThrowIfCancellationRequested();
-		_tray.SetUpdating();
-		await PerformSyncAsync(token);
+		EventRecorder.WriteEntry("Manual full re-sync requested", EventLogEntryType.Information);
+		_currentOpCts.Cancel();
+		await _opLock.WaitAsync().ConfigureAwait(false);
+
+		try
+		{
+			_currentOpCts = new CancellationTokenSource();
+			using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_currentOpCts.Token, _serviceStoppingToken);
+			var token = linkedCts.Token;
+			using var client = CreateHttpClient();
+			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
+			await WipeICloudCalendarAsync(client, calendarUrl, token, false).ConfigureAwait(false);
+			token.ThrowIfCancellationRequested();
+			_tray.SetUpdating();
+			await PerformSyncAsync(token).ConfigureAwait(false);
+		}
+		catch (UnauthorizedAccessException ex)
+		{
+			_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
+			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
+			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+		}
+		catch (OperationCanceledException)
+		{
+			_logger.LogInformation("Manual full re-sync canceled.");
+		}
+		finally
+		{
+			_opLock.Release();
+		}
 	}
-catch (UnauthorizedAccessException ex)
-{
-	_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
-	EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
-	MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
-}
-catch (OperationCanceledException)
-{
-	_logger.LogInformation("Manual full re-sync canceled.");
-}
-finally
-{
-	_opLock.Release();
-}
-}
 }
