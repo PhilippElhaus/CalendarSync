@@ -1,9 +1,12 @@
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading.Tasks;
+using System.Xml.Linq;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
-using Microsoft.Extensions.Logging;
-using System.Diagnostics;
-using System.Text;
-using System.Xml.Linq;
 
 namespace CalendarSync;
 
@@ -12,8 +15,8 @@ public partial class CalendarSyncService
 	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl, bool filterBySource)
 	{
 		var events = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		var requestBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><d:propfind xmlns:d=\"DAV:\" xmlns:cs=\"http://calendarserver.org/ns/\"><d:prop><d:getetag/><cs:getctag/></d:prop></d:propfind>";
-		var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), calendarUrl)
+		const string requestBody = "<?xml version="1.0" encoding="UTF-8"?><d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/"><d:prop><d:getetag/><cs:getctag/></d:prop></d:propfind>";
+		using var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), calendarUrl)
 		{
 			Content = new StringContent(requestBody, Encoding.UTF8, "application/xml")
 		};
@@ -35,11 +38,15 @@ public partial class CalendarSyncService
 				var etag = prop?.Element(dav + "getetag")?.Value ?? string.Empty;
 
 				if (string.IsNullOrEmpty(href) || !href.EndsWith(".ics", StringComparison.OrdinalIgnoreCase))
+				{
 					continue;
+				}
 
 				var uid = href.Trim('/').Split('/').Last().Replace(".ics", string.Empty, StringComparison.OrdinalIgnoreCase);
 				if (filterBySource && !IsManagedUid(uid))
+				{
 					continue;
+				}
 
 				events[uid] = etag;
 			}
@@ -70,8 +77,8 @@ public partial class CalendarSyncService
 		if (isAllDay)
 		{
 			var (startDate, endDate) = GetAllDayDateRange(appt.StartLocal, appt.EndLocal);
-			start = new CalDateTime(startDate);
-			end = new CalDateTime(endDate);
+			start = new CalDateTime(startDate) { IsAllDay = true };
+			end = new CalDateTime(endDate) { IsAllDay = true };
 		}
 		else
 		{
@@ -86,7 +93,7 @@ public partial class CalendarSyncService
 			End = end,
 			Location = appt.Location ?? string.Empty,
 			Uid = uid,
-			Description = appt.Body ?? string.Empty,
+			Description = appt.Body ?? string.Empty
 		};
 
 		if (!isAllDay)
@@ -101,8 +108,8 @@ public partial class CalendarSyncService
 	private HttpClient CreateHttpClient()
 	{
 		var client = new HttpClient();
-		client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-		"Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_config.ICloudUser}:{_config.ICloudPassword}")));
+		var credentials = Encoding.UTF8.GetBytes($"{_config.ICloudUser}:{_config.ICloudPassword}");
+		client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(credentials));
 		client.DefaultRequestHeaders.Add("User-Agent", "CalendarSyncService");
 		return client;
 	}
