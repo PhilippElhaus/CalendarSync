@@ -112,45 +112,44 @@ private void LogVerificationFailure(string uid, string message)
 	EventRecorder.WriteEntry($"iCloud verification mismatch UID {uid}: {message}", EventLogEntryType.Error);
 }
 
-private (DateTime start, DateTime end, bool isAllDay) GetExpectedTimes(OutlookEventDto dto)
-{
-	var span = dto.EndLocal - dto.StartLocal;
-	var isAllDay = dto.StartLocal.TimeOfDay == TimeSpan.Zero && span.TotalHours >= 23 &&
-	(dto.EndLocal.TimeOfDay == TimeSpan.Zero || dto.EndLocal.TimeOfDay >= new TimeSpan(23, 59, 0));
+	private (DateTime start, DateTime end, bool isAllDay) GetExpectedTimes(OutlookEventDto dto)
+		{
+			var isAllDay = DetermineAllDay(dto.StartLocal, dto.EndLocal, dto.IsAllDay);
 
-	if (isAllDay)
-	{
-		return (dto.StartLocal.Date, dto.EndLocal.Date, true);
+			if (isAllDay)
+			{
+				var (startDate, endDate) = GetAllDayDateRange(dto.StartLocal, dto.EndLocal);
+				return (startDate, endDate, true);
+			}
+
+			return (dto.StartUtc, dto.EndUtc, false);
+		}
+
+	private static (DateTime start, DateTime end, bool isAllDay) GetActualTimes(CalendarEvent calEvent)
+		{
+			var isAllDay = calEvent.Start?.IsAllDay ?? false;
+			if (isAllDay)
+			{
+				var startDate = calEvent.Start?.Value.Date ?? DateTime.MinValue.Date;
+				var endDate = calEvent.End?.Value.Date ?? startDate;
+				return (startDate, endDate, true);
+			}
+
+			var start = calEvent.Start?.AsUtc ?? DateTime.MinValue;
+			var end = calEvent.End?.AsUtc ?? start;
+			return (start, end, false);
+		}
+
+	private static bool IsWithinTolerance(DateTime actual, DateTime expected, TimeSpan tolerance)
+		{
+			return Math.Abs((actual - expected).TotalMinutes) <= tolerance.TotalMinutes;
+		}
+
+	private static string ExtractUidFromUrl(string eventUrl)
+		{
+			var uri = new Uri(eventUrl, UriKind.RelativeOrAbsolute);
+			var segments = uri.IsAbsoluteUri ? uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries) : eventUrl.Split('/', StringSplitOptions.RemoveEmptyEntries);
+			var lastSegment = segments.LastOrDefault() ?? string.Empty;
+			return lastSegment.Replace(".ics", string.Empty, StringComparison.OrdinalIgnoreCase);
+		}
 	}
-
-return (dto.StartUtc, dto.EndUtc, false);
-}
-
-private static (DateTime start, DateTime end, bool isAllDay) GetActualTimes(CalendarEvent calEvent)
-{
-		var isAllDay = calEvent.IsAllDay;
-		if (isAllDay)
-	{
-		var startDate = calEvent.Start?.Value.Date ?? DateTime.MinValue.Date;
-		var endDate = calEvent.End?.Value.Date ?? startDate;
-		return (startDate, endDate, true);
-	}
-
-var start = calEvent.Start?.AsUtc ?? DateTime.MinValue;
-var end = calEvent.End?.AsUtc ?? start;
-return (start, end, false);
-}
-
-private static bool IsWithinTolerance(DateTime actual, DateTime expected, TimeSpan tolerance)
-{
-	return Math.Abs((actual - expected).TotalMinutes) <= tolerance.TotalMinutes;
-}
-
-private static string ExtractUidFromUrl(string eventUrl)
-{
-	var uri = new Uri(eventUrl, UriKind.RelativeOrAbsolute);
-	var segments = uri.IsAbsoluteUri ? uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries) : eventUrl.Split('/', StringSplitOptions.RemoveEmptyEntries);
-	var lastSegment = segments.LastOrDefault() ?? string.Empty;
-	return lastSegment.Replace(".ics", string.Empty, StringComparison.OrdinalIgnoreCase);
-}
-}
