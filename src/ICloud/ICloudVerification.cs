@@ -84,7 +84,7 @@ private async Task AttemptICloudCorrectionAsync(HttpClient client, string eventU
 			return;
 		}
 
-	var verified = await VerifyICloudEventAsync(client, eventUrl, dto, token);
+	var verified = await VerifyICloudEventAsync(client, eventUrl, dto, token).ConfigureAwait(false);
 	if (verified)
 	{
 		_logger.LogInformation("Verification succeeded after correction for UID {Uid}", uid);
@@ -127,7 +127,7 @@ private void LogVerificationFailure(string uid, string message)
 
 	private static (DateTime start, DateTime end, bool isAllDay) GetActualTimes(CalendarEvent calEvent)
 		{
-			var isAllDay = calEvent.Start?.IsAllDay ?? false;
+			var isAllDay = calEvent.IsAllDay;
 			if (isAllDay)
 			{
 				var startDate = calEvent.Start?.Value.Date ?? DateTime.MinValue.Date;
