@@ -1,7 +1,5 @@
-using System;
-using System.Runtime.InteropServices;
-using System.Threading;
 using Microsoft.Extensions.Logging;
+using System.Runtime.InteropServices;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync;

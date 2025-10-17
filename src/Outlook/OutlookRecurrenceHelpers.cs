@@ -1,9 +1,7 @@
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
 using Ical.Net;
-using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Microsoft.Extensions.Logging;
+using System.Runtime.InteropServices;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync;

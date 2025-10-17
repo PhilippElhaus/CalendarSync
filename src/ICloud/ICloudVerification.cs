@@ -1,14 +1,9 @@
-using System;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Ical.Net;
 using Ical.Net.CalendarComponents;
-using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.Net;
+using System.Text;
 
 namespace CalendarSync;
 

@@ -1,9 +1,5 @@
 using Microsoft.Extensions.Logging;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace CalendarSync;
 

@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-using Ical.Net;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Microsoft.Extensions.Logging;

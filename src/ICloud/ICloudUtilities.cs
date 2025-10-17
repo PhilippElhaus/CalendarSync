@@ -1,14 +1,11 @@
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
 using Ical.Net;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Xml.Linq;
 
 
 namespace CalendarSync;

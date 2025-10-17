@@ -1,7 +1,6 @@
-using System.Collections.Generic;
+using Microsoft.Extensions.Logging;
 using System.Runtime.InteropServices;
 using Outlook = Microsoft.Office.Interop.Outlook;
-using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 
