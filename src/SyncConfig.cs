@@ -16,4 +16,7 @@ public class SyncConfig
 	public string? EventTag { get; set; }
 	public string? SourceTimeZoneId { get; set; }
 	public string? TargetTimeZoneId { get; set; }
+	public int RecurrenceExpansionDaysPast { get; set; } = 30;
+	public int RecurrenceExpansionDaysFuture { get; set; } = 30;
+	public bool IncludeSecondReminder { get; set; } = true;
 }

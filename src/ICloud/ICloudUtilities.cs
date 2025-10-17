@@ -91,13 +91,16 @@ var calEvent = new CalendarEvent
 	Description = appt.Body ?? string.Empty,
 };
 
-if (!isAllDay)
-{
-	calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
-	calEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
-}
+		if (!isAllDay)
+		{
+			calEvent.Alarms.Add(new Alarm { Action = "DISPLAY", Description = "Reminder", Trigger = new Trigger("-PT10M") });
+			if (_config.IncludeSecondReminder)
+			{
+				calEvent.Alarms.Add(new Alarm { Action = "DISPLAY", Description = "Reminder", Trigger = new Trigger("-PT3M") });
+			}
+		}
 
-return calEvent;
+		return calEvent;
 }
 
 private HttpClient CreateHttpClient()

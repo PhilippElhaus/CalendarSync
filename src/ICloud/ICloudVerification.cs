@@ -128,8 +128,8 @@ return (dto.StartUtc, dto.EndUtc, false);
 
 private static (DateTime start, DateTime end, bool isAllDay) GetActualTimes(CalendarEvent calEvent)
 {
-	var isAllDay = calEvent.Start?.IsAllDay ?? false;
-	if (isAllDay)
+		var isAllDay = calEvent.IsAllDay;
+		if (isAllDay)
 	{
 		var startDate = calEvent.Start?.Value.Date ?? DateTime.MinValue.Date;
 		var endDate = calEvent.End?.Value.Date ?? startDate;
