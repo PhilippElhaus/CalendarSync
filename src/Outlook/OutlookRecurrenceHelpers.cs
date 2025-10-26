@@ -265,6 +265,10 @@ public partial class CalendarSyncService
 
                         if (!seriesAllDay)
                         {
+                                var originalStartLocal = startLocal;
+                                var originalEndLocal = endLocal;
+                                var originalStartUtc = startUtc;
+                                var originalEndUtc = endUtc;
                                 var desiredStartLocal = DateTime.SpecifyKind(startLocal.Date.Add(baseStartLocal.TimeOfDay), DateTimeKind.Unspecified);
                                 var desiredEndLocal = desiredStartLocal + baseLocalDuration;
 
@@ -278,10 +282,33 @@ public partial class CalendarSyncService
                                                 startLocal);
                                 }
 
-                                startLocal = desiredStartLocal;
-                                endLocal = desiredEndLocal;
-                                startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
-                                endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
+                                var invalidTime = _sourceTimeZone.IsInvalidTime(desiredStartLocal) || _sourceTimeZone.IsInvalidTime(desiredEndLocal);
+                                var ambiguousTime = _sourceTimeZone.IsAmbiguousTime(desiredStartLocal) || _sourceTimeZone.IsAmbiguousTime(desiredEndLocal);
+
+                                if (invalidTime || ambiguousTime)
+                                {
+                                        _logger.LogWarning(
+                                                "Skipping recurrence adjustment for '{Subject}' on {Date} because desired local window {DesiredStart:o}-{DesiredEnd:o} is {State} in timezone {TimeZone}. Keeping computed values {ComputedStart:o}-{ComputedEnd:o}.",
+                                                appt.Subject,
+                                                desiredStartLocal.Date,
+                                                desiredStartLocal,
+                                                desiredEndLocal,
+                                                invalidTime ? "invalid" : "ambiguous",
+                                                _sourceTimeZone.Id,
+                                                originalStartLocal,
+                                                originalEndLocal);
+                                        startLocal = originalStartLocal;
+                                        endLocal = originalEndLocal;
+                                        startUtc = originalStartUtc;
+                                        endUtc = originalEndUtc;
+                                }
+                                else
+                                {
+                                        startLocal = desiredStartLocal;
+                                        endLocal = desiredEndLocal;
+                                        startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
+                                        endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
+                                }
                         }
 
                         var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
