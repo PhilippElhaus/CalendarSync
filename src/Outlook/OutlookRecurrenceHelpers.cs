@@ -242,14 +242,16 @@ public partial class CalendarSyncService
                 }
         }
 
-	private void AddCalculatedOccurrences(
+        private void AddCalculatedOccurrences(
                 List<OccurrenceInfo> results,
                 Outlook.AppointmentItem appt,
                 IEnumerable<Occurrence> occurrences,
                 HashSet<DateTime> skipDates,
                 TimeSpan baseDuration,
+                TimeSpan baseLocalDuration,
+                DateTime baseStartLocal,
                 bool seriesAllDay)
-	{
+        {
                 foreach (var occ in occurrences)
                 {
                         var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
@@ -259,6 +261,27 @@ public partial class CalendarSyncService
                         if (skipDates.Contains(startLocal.Date))
                         {
                                 continue;
+                        }
+
+                        if (!seriesAllDay)
+                        {
+                                var desiredStartLocal = DateTime.SpecifyKind(startLocal.Date.Add(baseStartLocal.TimeOfDay), DateTimeKind.Unspecified);
+                                var desiredEndLocal = desiredStartLocal + baseLocalDuration;
+
+                                if (Math.Abs((startLocal - desiredStartLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+                                {
+                                        _logger.LogInformation(
+                                                "Adjusted recurring occurrence for '{Subject}' on {Date}: expected {Expected:o} but computed {Computed:o}.",
+                                                appt.Subject,
+                                                desiredStartLocal.Date,
+                                                desiredStartLocal,
+                                                startLocal);
+                                }
+
+                                startLocal = desiredStartLocal;
+                                endLocal = desiredEndLocal;
+                                startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
+                                endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
                         }
 
                         var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
