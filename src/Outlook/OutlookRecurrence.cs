@@ -7,9 +7,19 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private List<(DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
+	private sealed record OccurrenceInfo(
+		DateTime StartLocal,
+		DateTime EndLocal,
+		DateTime StartUtc,
+		DateTime EndUtc,
+		bool IsAllDay,
+		string? SubjectOverride,
+		string? BodyOverride,
+		string? LocationOverride);
+
+	private List<OccurrenceInfo> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
 	{
-		var results = new List<(DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)>();
+		var results = new List<OccurrenceInfo>();
 
 		var pattern = TryGetRecurrencePattern(appt);
 		if (pattern == null)
@@ -64,6 +74,4 @@ public partial class CalendarSyncService
 
 		return results;
 	}
-
-	
 }
