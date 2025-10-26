@@ -31,31 +31,31 @@ public partial class CalendarSyncService
 		switch (pattern.RecurrenceType)
 		{
 			case Outlook.OlRecurrenceType.olRecursDaily:
-				rule.Frequency = FrequencyType.Daily;
-				break;
+			rule.Frequency = FrequencyType.Daily;
+			break;
 			case Outlook.OlRecurrenceType.olRecursWeekly:
-				rule.Frequency = FrequencyType.Weekly;
-				ConfigureWeeklyRule(rule, pattern.DayOfWeekMask);
-				break;
+			rule.Frequency = FrequencyType.Weekly;
+			ConfigureWeeklyRule(rule, pattern.DayOfWeekMask);
+			break;
 			case Outlook.OlRecurrenceType.olRecursMonthly:
-				rule.Frequency = FrequencyType.Monthly;
-				ConfigureMonthlyRule(rule, pattern.DayOfMonth);
-				break;
+			rule.Frequency = FrequencyType.Monthly;
+			ConfigureMonthlyRule(rule, pattern.DayOfMonth);
+			break;
 			case Outlook.OlRecurrenceType.olRecursMonthNth:
-				rule.Frequency = FrequencyType.Monthly;
-				ConfigureNthRule(rule, pattern.DayOfWeekMask, pattern.Instance);
-				break;
+			rule.Frequency = FrequencyType.Monthly;
+			ConfigureNthRule(rule, pattern.DayOfWeekMask, pattern.Instance);
+			break;
 			case Outlook.OlRecurrenceType.olRecursYearly:
-				rule.Frequency = FrequencyType.Yearly;
-				ConfigureYearlyRule(rule, pattern.MonthOfYear, pattern.DayOfMonth);
-				break;
+			rule.Frequency = FrequencyType.Yearly;
+			ConfigureYearlyRule(rule, pattern.MonthOfYear, pattern.DayOfMonth);
+			break;
 			case Outlook.OlRecurrenceType.olRecursYearNth:
-				rule.Frequency = FrequencyType.Yearly;
-				ConfigureYearlyNthRule(rule, pattern.MonthOfYear, pattern.DayOfWeekMask, pattern.Instance);
-				break;
+			rule.Frequency = FrequencyType.Yearly;
+			ConfigureYearlyNthRule(rule, pattern.MonthOfYear, pattern.DayOfWeekMask, pattern.Instance);
+			break;
 			default:
-				_logger.LogWarning("Unsupported recurrence type for event '{Subject}'. Skipping.", subject);
-				return null;
+			_logger.LogWarning("Unsupported recurrence type for event '{Subject}'. Skipping.", subject);
+			return null;
 		}
 
 		ApplyPatternEnd(rule, pattern);
@@ -188,130 +188,131 @@ public partial class CalendarSyncService
 	}
 
 	private void ProcessRecurrenceExceptions(
-                Outlook.RecurrencePattern pattern,
-                Outlook.AppointmentItem appt,
-                DateTime from,
-                DateTime to,
-                List<OccurrenceInfo> results,
-                HashSet<DateTime> skipDates)
+				Outlook.RecurrencePattern pattern,
+				Outlook.AppointmentItem appt,
+				DateTime from,
+				DateTime to,
+				List<OccurrenceInfo> results,
+				HashSet<DateTime> skipDates)
 	{
-                foreach (Outlook.Exception ex in pattern.Exceptions)
-                {
-                        try
-                        {
-                                skipDates.Add(ex.OriginalDate.Date);
+		foreach (Outlook.Exception ex in pattern.Exceptions)
+		{
+			try
+			{
+				skipDates.Add(ex.OriginalDate.Date);
 
-                                var exceptionItem = ex.AppointmentItem;
-                                if (exceptionItem != null)
-                                {
-                                        try
-                                        {
-                                                var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(exceptionItem.Start, exceptionItem.StartUTC, $"exception '{appt.Subject}' start");
-                                                var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(exceptionItem.End, exceptionItem.EndUTC, $"exception '{appt.Subject}' end");
+				var exceptionItem = ex.AppointmentItem;
+				if (exceptionItem != null)
+				{
+					try
+					{
+						var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(exceptionItem.Start, exceptionItem.StartUTC, $"exception '{appt.Subject}' start");
+						var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(exceptionItem.End, exceptionItem.EndUTC, $"exception '{appt.Subject}' end");
 
-                                                if (exStartLocal >= from && exStartLocal <= to)
-                                                {
-                                                        var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, exceptionItem.AllDayEvent);
-                                                        results.Add(new OccurrenceInfo(
-                                                                exStartLocal,
-                                                                exEndLocal,
-                                                                exStartUtc,
-                                                                exEndUtc,
-                                                                exAllDay,
-                                                                exceptionItem.Subject,
-                                                                exceptionItem.Body,
-                                                                exceptionItem.Location));
-                                                        _logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
-                                                }
-                                        }
-                                        finally
-                                        {
-                                                try
-                                                {
-                                                        Marshal.FinalReleaseComObject(exceptionItem);
-                                                }
-                                                catch
-                                                {
-                                                }
-                                        }
-                                }
-                        }
-                        catch
-                        {
-                        }
-                }
-        }
+						if (exStartLocal >= from && exStartLocal <= to)
+						{
+							var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, exceptionItem.AllDayEvent);
+							results.Add(new OccurrenceInfo(
+									exStartLocal,
+									exEndLocal,
+									exStartUtc,
+									exEndUtc,
+									exAllDay,
+									exceptionItem.Subject,
+									exceptionItem.Body,
+									exceptionItem.Location));
+							_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
+						}
+					}
+					finally
+					{
+						try
+						{
+							Marshal.FinalReleaseComObject(exceptionItem);
+						}
+						catch
+						{
+						}
+					}
+				}
+			}
+			catch
+			{
+			}
+		}
+	}
 
-        private void AddCalculatedOccurrences(
-                List<OccurrenceInfo> results,
-                Outlook.AppointmentItem appt,
-                IEnumerable<Occurrence> occurrences,
-                HashSet<DateTime> skipDates,
-                TimeSpan baseDuration,
-                TimeSpan baseLocalDuration,
-                DateTime baseStartLocal,
-                bool seriesAllDay)
-        {
-                foreach (var occ in occurrences)
-                {
-                        var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
-                        var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
-                        var startLocal = ConvertUtcToSourceLocal(startUtc);
-                        var endLocal = ConvertUtcToSourceLocal(endUtc);
-                        if (skipDates.Contains(startLocal.Date))
-                        {
-                                continue;
-                        }
+	private void AddCalculatedOccurrences(
+			List<OccurrenceInfo> results,
+			Outlook.AppointmentItem appt,
+			IEnumerable<Occurrence> occurrences,
+			HashSet<DateTime> skipDates,
+			TimeSpan baseDuration,
+			TimeSpan baseLocalDuration,
+			DateTime baseStartLocal,
+			bool seriesAllDay)
+	{
+		foreach (var occ in occurrences)
+		{
+			var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
+			var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
+			var startLocal = ConvertUtcToSourceLocal(startUtc);
+			var endLocal = ConvertUtcToSourceLocal(endUtc);
+			if (skipDates.Contains(startLocal.Date))
+			{
+				continue;
+			}
 
-                        if (!seriesAllDay)
-                        {
-                                var originalStartLocal = startLocal;
-                                var originalEndLocal = endLocal;
-                                var originalStartUtc = startUtc;
-                                var originalEndUtc = endUtc;
-                                var desiredStartLocal = DateTime.SpecifyKind(startLocal.Date.Add(baseStartLocal.TimeOfDay), DateTimeKind.Unspecified);
-                                var desiredEndLocal = desiredStartLocal + baseLocalDuration;
+			if (!seriesAllDay)
+			{
+				var originalStartLocal = startLocal;
+				var originalEndLocal = endLocal;
+				var originalStartUtc = startUtc;
+				var originalEndUtc = endUtc;
+				var desiredStartLocal = DateTime.SpecifyKind(startLocal.Date.Add(baseStartLocal.TimeOfDay), DateTimeKind.Unspecified);
+				var desiredEndLocal = desiredStartLocal + baseLocalDuration;
 
-                                if (Math.Abs((startLocal - desiredStartLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
-                                {
-                                        _logger.LogInformation(
-                                                "Adjusted recurring occurrence for '{Subject}' on {Date}: expected {Expected:o} but computed {Computed:o}.",
-                                                appt.Subject,
-                                                desiredStartLocal.Date,
-                                                desiredStartLocal,
-                                                startLocal);
-                                }
+				if (Math.Abs((startLocal - desiredStartLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+				{
+					_logger.LogInformation(
+							"Adjusted recurring occurrence for '{Subject}' on {Date}: expected {Expected:o} but computed {Computed:o}.",
+							appt.Subject,
+							desiredStartLocal.Date,
+							desiredStartLocal,
+							startLocal);
+				}
 
-                                var invalidTime = _sourceTimeZone.IsInvalidTime(desiredStartLocal) || _sourceTimeZone.IsInvalidTime(desiredEndLocal);
-                                var ambiguousTime = _sourceTimeZone.IsAmbiguousTime(desiredStartLocal) || _sourceTimeZone.IsAmbiguousTime(desiredEndLocal);
+				var invalidTime = _sourceTimeZone.IsInvalidTime(desiredStartLocal) || _sourceTimeZone.IsInvalidTime(desiredEndLocal);
+				var ambiguousTime = _sourceTimeZone.IsAmbiguousTime(desiredStartLocal) || _sourceTimeZone.IsAmbiguousTime(desiredEndLocal);
 
-                                if (invalidTime || ambiguousTime)
-                                {
-                                        _logger.LogWarning(
-                                                "Skipping recurrence adjustment for '{Subject}' on {Date} because desired local window {DesiredStart:o}-{DesiredEnd:o} is {State} in timezone {TimeZone}. Keeping computed values {ComputedStart:o}-{ComputedEnd:o}.",
-                                                appt.Subject,
-                                                desiredStartLocal.Date,
-                                                desiredStartLocal,
-                                                desiredEndLocal,
-                                                invalidTime ? "invalid" : "ambiguous",
-                                                _sourceTimeZone.Id,
-                                                originalStartLocal,
-                                                originalEndLocal);
-                                        startLocal = originalStartLocal;
-                                        endLocal = originalEndLocal;
-                                        startUtc = originalStartUtc;
-                                        endUtc = originalEndUtc;
-                                }
-                                else
-                                {
-                                        startLocal = desiredStartLocal;
-                                        endLocal = desiredEndLocal;
-                                        startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
-                                        endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
-                                }
-                        }
+				if (invalidTime || ambiguousTime)
+				{
+					_logger.LogWarning(
+							"Skipping recurrence adjustment for '{Subject}' on {Date} because desired local window {DesiredStart:o}-{DesiredEnd:o} is {State} in timezone {TimeZone}. Keeping computed values {ComputedStart:o}-{ComputedEnd:o}.",
+							appt.Subject,
+							desiredStartLocal.Date,
+							desiredStartLocal,
+							desiredEndLocal,
+							invalidTime ? "invalid" : "ambiguous",
+							_sourceTimeZone.Id,
+							originalStartLocal,
+							originalEndLocal);
+					startLocal = originalStartLocal;
+					endLocal = originalEndLocal;
+					startUtc = originalStartUtc;
+					endUtc = originalEndUtc;
+				}
+				else
+				{
+					startLocal = desiredStartLocal;
+					endLocal = desiredEndLocal;
+					startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
+					endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
+				}
+			}
 
-                        var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
-                        results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null));
-                }
-        }
+			var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
+			results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null));
+		}
+	}
+}
