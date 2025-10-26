@@ -188,59 +188,80 @@ public partial class CalendarSyncService
 	}
 
 	private void ProcessRecurrenceExceptions(
-		Outlook.RecurrencePattern pattern,
-		Outlook.AppointmentItem appt,
-		DateTime from,
-		DateTime to,
-		List<(DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)> results,
-		HashSet<DateTime> skipDates)
+                Outlook.RecurrencePattern pattern,
+                Outlook.AppointmentItem appt,
+                DateTime from,
+                DateTime to,
+                List<OccurrenceInfo> results,
+                HashSet<DateTime> skipDates)
 	{
-		foreach (Outlook.Exception ex in pattern.Exceptions)
-		{
-			try
-			{
-				skipDates.Add(ex.OriginalDate.Date);
+                foreach (Outlook.Exception ex in pattern.Exceptions)
+                {
+                        try
+                        {
+                                skipDates.Add(ex.OriginalDate.Date);
 
-				if (ex.AppointmentItem != null)
-				{
-					var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(ex.AppointmentItem.Start, ex.AppointmentItem.StartUTC, $"exception '{appt.Subject}' start");
-					var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(ex.AppointmentItem.End, ex.AppointmentItem.EndUTC, $"exception '{appt.Subject}' end");
+                                var exceptionItem = ex.AppointmentItem;
+                                if (exceptionItem != null)
+                                {
+                                        try
+                                        {
+                                                var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(exceptionItem.Start, exceptionItem.StartUTC, $"exception '{appt.Subject}' start");
+                                                var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(exceptionItem.End, exceptionItem.EndUTC, $"exception '{appt.Subject}' end");
 
-					if (exStartLocal >= from && exStartLocal <= to)
-					{
-						var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, ex.AppointmentItem?.AllDayEvent ?? appt.AllDayEvent);
-						results.Add((exStartLocal, exEndLocal, exStartUtc, exEndUtc, exAllDay));
-						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
-					}
-				}
-			}
-			catch
-			{
-			}
-		}
-	}
+                                                if (exStartLocal >= from && exStartLocal <= to)
+                                                {
+                                                        var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, exceptionItem.AllDayEvent);
+                                                        results.Add(new OccurrenceInfo(
+                                                                exStartLocal,
+                                                                exEndLocal,
+                                                                exStartUtc,
+                                                                exEndUtc,
+                                                                exAllDay,
+                                                                exceptionItem.Subject,
+                                                                exceptionItem.Body,
+                                                                exceptionItem.Location));
+                                                        _logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
+                                                }
+                                        }
+                                        finally
+                                        {
+                                                try
+                                                {
+                                                        Marshal.FinalReleaseComObject(exceptionItem);
+                                                }
+                                                catch
+                                                {
+                                                }
+                                        }
+                                }
+                        }
+                        catch
+                        {
+                        }
+                }
+        }
 
 	private void AddCalculatedOccurrences(
-		List<(DateTime startLocal, DateTime endLocal, DateTime startUtc, DateTime endUtc, bool isAllDay)> results,
-		Outlook.AppointmentItem appt,
-		IEnumerable<Occurrence> occurrences,
-		HashSet<DateTime> skipDates,
-		TimeSpan baseDuration,
-		bool seriesAllDay)
+                List<OccurrenceInfo> results,
+                Outlook.AppointmentItem appt,
+                IEnumerable<Occurrence> occurrences,
+                HashSet<DateTime> skipDates,
+                TimeSpan baseDuration,
+                bool seriesAllDay)
 	{
-		foreach (var occ in occurrences)
-		{
-			var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
-			var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
-			var startLocal = ConvertUtcToSourceLocal(startUtc);
-			var endLocal = ConvertUtcToSourceLocal(endUtc);
-			if (skipDates.Contains(startLocal.Date))
-			{
-				continue;
-			}
+                foreach (var occ in occurrences)
+                {
+                        var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
+                        var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
+                        var startLocal = ConvertUtcToSourceLocal(startUtc);
+                        var endLocal = ConvertUtcToSourceLocal(endUtc);
+                        if (skipDates.Contains(startLocal.Date))
+                        {
+                                continue;
+                        }
 
-			var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
-			results.Add((startLocal, endLocal, startUtc, endUtc, occAllDay));
-		}
-	}
-}
+                        var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
+                        results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null));
+                }
+        }

@@ -53,27 +53,27 @@ public partial class CalendarSyncService
 		var patternEnd = syncEnd.AddDays(_config.RecurrenceExpansionDaysFuture);
 
 		var occurrences = ExpandRecurrenceManually(seriesItem, patternStart, patternEnd);
-
-		foreach (var (startLocal, endLocal, startUtc, endUtc, isAllDay) in occurrences)
+		var baseSubject = seriesItem.Subject ?? string.Empty;
+		var baseBody = seriesItem.Body ?? string.Empty;
+		var baseLocation = seriesItem.Location ?? string.Empty;
+		foreach (var occurrence in occurrences)
 		{
-			if (startLocal < syncStart || startLocal > syncEnd)
+			if (occurrence.StartLocal < syncStart || occurrence.StartLocal > syncEnd)
 			{
 				continue;
 			}
-
 			var dto = new OutlookEventDto(
-				appt.Subject ?? string.Empty,
-				appt.Body ?? string.Empty,
-				appt.Location ?? string.Empty,
-				startLocal,
-				endLocal,
-				startUtc,
-				endUtc,
+				occurrence.SubjectOverride ?? baseSubject,
+				occurrence.BodyOverride ?? baseBody,
+				occurrence.LocationOverride ?? baseLocation,
+				occurrence.StartLocal,
+				occurrence.EndLocal,
+				occurrence.StartUtc,
+				occurrence.EndUtc,
 				globalId,
-				isAllDay
+				occurrence.IsAllDay
 			);
-
-			dto = EnsureEventConsistency(dto, $"recurring '{appt.Subject}'");
+			dto = EnsureEventConsistency(dto, $"recurring '{dto.Subject}'");
 			var sanitizedDto = dto with { StartLocal = dto.StartLocal, EndLocal = dto.EndLocal };
 			AddEventChunks(events, globalId, sanitizedDto);
 		}
