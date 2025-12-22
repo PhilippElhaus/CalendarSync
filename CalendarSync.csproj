@@ -62,10 +62,11 @@
 	<Target Name="RelocateDlls" AfterTargets="Build">
 		<ItemGroup>
 			<RootDlls Include="$(OutputPath)*.dll"
-					  Exclude="
-						$(OutputPath)bin\**;
-						$(OutputPath)$(AssemblyName).dll" />
+				  Exclude="
+					$(OutputPath)bin\**;
+					$(OutputPath)$(AssemblyName).dll" />
 			<RuntimeDlls Include="$(OutputPath)runtimes\win\lib\net8.0\*.dll" />
+			<RuntimeNativeDlls Include="$(OutputPath)runtimes\win\native\**\*.dll" />
 			<RuntimeDirsToPrune Include="
 				$(OutputPath)runtimes\win\lib\net8.0;
 				$(OutputPath)runtimes\win\lib;
@@ -87,8 +88,14 @@
 			  Condition="@(RuntimeDlls->Count()) != 0" />
 		<Delete Files="@(RuntimeDlls)" Condition="@(RuntimeDlls->Count()) != 0" />
 
+		<Copy SourceFiles="@(RuntimeNativeDlls)"
+			  DestinationFolder="$(OutputPath)bin\"
+			  SkipUnchangedFiles="true"
+			  Condition="@(RuntimeNativeDlls->Count()) != 0" />
+		<Delete Files="@(RuntimeNativeDlls)" Condition="@(RuntimeNativeDlls->Count()) != 0" />
+
 		<RemoveDir Directories="@(RuntimeDirsToPrune)"
-				   Condition="Exists('%(RuntimeDirsToPrune.Identity)')" />
+			   Condition="Exists('%(RuntimeDirsToPrune.Identity)')" />
 	</Target>
 
 </Project>
