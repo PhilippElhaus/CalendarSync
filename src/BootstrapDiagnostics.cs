@@ -16,7 +16,17 @@ internal static class BootstrapDiagnostics
 	{
 		if (_initialized)
 			return;
-		_initialized = true;
+        try
+        {
+            lock (Sync)
+            {
+                File.WriteAllText(LogPath, string.Empty);
+            }
+        }
+        catch
+        {
+        }
+        _initialized = true;
 		Log($"Bootstrap diagnostics initialized. BaseDir={AppDomain.CurrentDomain.BaseDirectory}, WorkDir={Environment.CurrentDirectory}, Arch={RuntimeInformation.ProcessArchitecture}.");
 		LogDirectorySnapshot(AppDomain.CurrentDomain.BaseDirectory, 50);
 		AppDomain.CurrentDomain.ProcessExit += (_, _) => Log("Process exit observed.");
