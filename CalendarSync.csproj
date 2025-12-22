@@ -61,10 +61,12 @@
 
 	<Target Name="RelocateDlls" AfterTargets="Build">
 		<ItemGroup>
+			<DllsToKeepInRoot Include="$(OutputPath)Microsoft.Extensions.*.dll" />
 			<RootDlls Include="$(OutputPath)*.dll"
 				  Exclude="
 					$(OutputPath)bin\**;
-					$(OutputPath)$(AssemblyName).dll" />
+					$(OutputPath)$(AssemblyName).dll;
+					@(DllsToKeepInRoot)" />
 			<RuntimeDlls Include="$(OutputPath)runtimes\win\lib\net8.0\*.dll" />
 			<RuntimeNativeDlls Include="$(OutputPath)runtimes\win\native\**\*.dll" />
 			<RuntimeDirsToPrune Include="
