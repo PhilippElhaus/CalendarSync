@@ -1,6 +1,4 @@
-using System.Reflection;
-using System.Runtime.Loader;
-using System.Threading;
+using System.Runtime.InteropServices;
 
 namespace CalendarSync;
 
