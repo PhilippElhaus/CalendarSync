@@ -23,6 +23,7 @@ public class Program
 
 	static Program()
 	{
+		BootstrapDiagnostics.Initialize();
 		AppDomain.CurrentDomain.AssemblyResolve += ResolveFromBin;
 		AssemblyLoadContext.Default.Resolving += ResolveFromBin;
 		AssemblyLoadContext.Default.ResolvingUnmanagedDll += ResolveNativeFromBin;
@@ -31,33 +32,46 @@ public class Program
 	[STAThread]
 	public static void Main(string[] args)
 	{
-		EventRecorder.Initialize();
-		using var singleInstanceMutex = new System.Threading.Mutex(true, "CalendarSync", out var createdNewInstance);
-		if (!createdNewInstance)
-			return;
-		SubscribeToGlobalExceptions();
-		EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
-
-		using var host = CreateHostBuilder(args).Build();
-		var tray = host.Services.GetRequiredService<TrayIconManager>();
-		var service = host.Services.GetRequiredService<CalendarSyncService>();
-
-		tray.ExitClicked += async (_, _) =>
+		try
 		{
-			EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
-			await host.StopAsync().ConfigureAwait(false);
-			tray.Dispose();
-			Application.Exit();
-		};
+			BootstrapDiagnostics.Log("Main entry reached.");
+			EventRecorder.Initialize();
+			using var singleInstanceMutex = new System.Threading.Mutex(true, "CalendarSync", out var createdNewInstance);
+			if (!createdNewInstance)
+			{
+				BootstrapDiagnostics.Log("Another instance detected, exiting.");
+				return;
+			}
+			SubscribeToGlobalExceptions();
+			EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
 
-		tray.FullResyncClicked += async (_, _) =>
+			using var host = CreateHostBuilder(args).Build();
+			var tray = host.Services.GetRequiredService<TrayIconManager>();
+			var service = host.Services.GetRequiredService<CalendarSyncService>();
+
+			tray.ExitClicked += async (_, _) =>
+			{
+				EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
+				await host.StopAsync().ConfigureAwait(false);
+				tray.Dispose();
+				Application.Exit();
+			};
+
+			tray.FullResyncClicked += async (_, _) =>
+			{
+				await service.TriggerFullResyncAsync().ConfigureAwait(false);
+			};
+
+			host.StartAsync().GetAwaiter().GetResult();
+			BootstrapDiagnostics.Log("Host started, entering message loop.");
+			Application.Run();
+			EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
+		}
+		catch (Exception ex)
 		{
-			await service.TriggerFullResyncAsync().ConfigureAwait(false);
-		};
-
-		host.StartAsync().GetAwaiter().GetResult();
-		Application.Run();
-		EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
+			BootstrapDiagnostics.Log($"Fatal exception in Main: {ex}");
+			throw;
+		}
 	}
 
 	public static IHostBuilder CreateHostBuilder(string[] args) =>
@@ -67,6 +81,7 @@ public class Program
 						var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
 						if (!File.Exists(configPath))
 						{
+							BootstrapDiagnostics.Log($"config.json missing at {configPath}.");
 							EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
 							throw new FileNotFoundException("config.json not found in the executable directory.");
 						}
@@ -105,6 +120,7 @@ public class Program
 								.CreateLogger();
 
 						services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
+						BootstrapDiagnostics.Log("Services configured successfully.");
 						EventRecorder.WriteEntry("Configuration loaded", EventLogEntryType.Information);
 					});
 
@@ -128,6 +144,7 @@ public class Program
 			Log.Fatal(ex, "Unhandled exception");
 		}
 		catch { }
+		BootstrapDiagnostics.Log($"Unhandled exception captured: {ex}");
 		EventRecorder.WriteEntry(ex.ToString(), EventLogEntryType.Error);
 	}
 
@@ -148,15 +165,25 @@ public class Program
 	{
 		var candidatePath = Path.Combine(BinDirectory.Value, $"{assemblyName.Name}.dll");
 		if (!File.Exists(candidatePath))
+		{
+			BootstrapDiagnostics.LogAssemblyProbe(assemblyName.Name ?? "unknown", candidatePath, false, false);
 			return null;
-		return AssemblyLoadContext.Default.LoadFromAssemblyPath(candidatePath);
+		}
+		var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(candidatePath);
+		BootstrapDiagnostics.LogAssemblyProbe(assemblyName.Name ?? "unknown", candidatePath, true, assembly != null);
+		return assembly;
 	}
 
 	private static IntPtr ResolveNativeFromBin(Assembly _, string name)
 	{
 		var candidatePath = Path.Combine(BinDirectory.Value, $"{name}.dll");
 		if (!File.Exists(candidatePath))
+		{
+			BootstrapDiagnostics.LogNativeProbe(name, candidatePath, false, false);
 			return IntPtr.Zero;
-		return NativeLibrary.Load(candidatePath);
+		}
+		var handle = NativeLibrary.Load(candidatePath);
+		BootstrapDiagnostics.LogNativeProbe(name, candidatePath, true, handle != IntPtr.Zero);
+		return handle;
 	}
 }
