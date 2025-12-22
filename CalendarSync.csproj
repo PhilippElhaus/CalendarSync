@@ -1,17 +1,24 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<OutputType>WinExe</OutputType>
-		<ApplicationIcon>ico\cal64.ico</ApplicationIcon>
 		<TargetFramework>net8.0-windows</TargetFramework>
+		<OutputType>WinExe</OutputType>
 		<UseWindowsForms>true</UseWindowsForms>
+		<StartupObject>CalendarSync.Program</StartupObject>
+
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
+
+		<ApplicationIcon>ico\cal64.ico</ApplicationIcon>
 		<PlatformTarget>x86</PlatformTarget>
+
 		<OutputPath>Z:\Calendar\</OutputPath>
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
-		<StartupObject>CalendarSync.Program</StartupObject>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)'=='Release'">
+		<DebugType>none</DebugType>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -27,8 +34,8 @@
 	<ItemGroup>
 		<COMReference Include="Microsoft.Office.Interop.Outlook">
 			<WrapperTool>tlbimp</WrapperTool>
-			<VersionMinor>6</VersionMinor>
 			<VersionMajor>9</VersionMajor>
+			<VersionMinor>6</VersionMinor>
 			<Guid>00062fff-0000-0000-c000-000000000046</Guid>
 			<Lcid>0</Lcid>
 			<Isolated>false</Isolated>
@@ -37,42 +44,51 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<None Include="build\Readme.txt">
-			<Link>Readme.txt</Link>
-			<CopyToOutputDirectory Condition="'$(Configuration)'=='Release'">PreserveNewest</CopyToOutputDirectory>
-		</None>
-		<None Update="build\config.json">
+		<None Include="build\Readme.txt" Condition="'$(Configuration)'=='Release'">
+			<TargetPath>Readme.txt</TargetPath>
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
-		<None Update="ico\cal64.ico">
+
+		<None Include="build\config.json">
+			<TargetPath>config.json</TargetPath>
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
-		<None Update="ico\icon_delete.ico">
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</None>
-		<None Update="ico\icon_idle.ico">
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</None>
-		<None Update="ico\icon_update.ico">
+
+		<None Update="ico\*.ico">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
 	</ItemGroup>
 
 	<Target Name="RelocateDlls" AfterTargets="Build">
 		<ItemGroup>
-			<RootDlls Include="$(OutputPath)*.dll" Exclude="$(OutputPath)bin\**" />
+			<RootDlls Include="$(OutputPath)*.dll"
+					  Exclude="
+						$(OutputPath)bin\**;
+						$(OutputPath)$(AssemblyName).dll" />
 			<RuntimeDlls Include="$(OutputPath)runtimes\win\lib\net8.0\*.dll" />
+			<RuntimeDirsToPrune Include="
+				$(OutputPath)runtimes\win\lib\net8.0;
+				$(OutputPath)runtimes\win\lib;
+				$(OutputPath)runtimes\win;
+				$(OutputPath)runtimes" />
 		</ItemGroup>
-		<MakeDir Directories="$(OutputPath)bin\" />
-		<Move SourceFiles="@(RootDlls)" DestinationFolder="$(OutputPath)bin\" Condition="@(RootDlls-&gt;Count()) != 0" />
-		<Move SourceFiles="@(RuntimeDlls)" DestinationFolder="$(OutputPath)bin\" Condition="@(RuntimeDlls-&gt;Count()) != 0" />
-	</Target>
 
-	<Target Name="RemovePdbFiles" AfterTargets="RelocateDlls">
-		<ItemGroup>
-			<PdbFiles Include="$(OutputPath)**\*.pdb" />
-		</ItemGroup>
-		<Delete Files="@(PdbFiles)" TreatErrorsAsWarnings="false" />
+		<MakeDir Directories="$(OutputPath)bin\" />
+
+		<Copy SourceFiles="@(RootDlls)"
+			  DestinationFolder="$(OutputPath)bin\"
+			  SkipUnchangedFiles="true"
+			  Condition="@(RootDlls->Count()) != 0" />
+		<Delete Files="@(RootDlls)" Condition="@(RootDlls->Count()) != 0" />
+
+		<Copy SourceFiles="@(RuntimeDlls)"
+			  DestinationFolder="$(OutputPath)bin\"
+			  SkipUnchangedFiles="true"
+			  Condition="@(RuntimeDlls->Count()) != 0" />
+		<Delete Files="@(RuntimeDlls)" Condition="@(RuntimeDlls->Count()) != 0" />
+
+		<RemoveDir Directories="@(RuntimeDirsToPrune)"
+				   Condition="Exists('%(RuntimeDirsToPrune.Identity)')" />
 	</Target>
 
 </Project>

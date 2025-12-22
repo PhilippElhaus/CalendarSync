@@ -16,7 +16,7 @@ public static class EventRecorder
 				EventLog.CreateEventSource(Source, LogName);
 			_enabled = true;
 		}
-		catch (Exception ex)
+		catch 
 		{
 			_enabled = false;
 		}
@@ -30,7 +30,7 @@ public static class EventRecorder
 		{
 			EventLog.WriteEntry(Source, message, type);
 		}
-		catch (Exception ex)
+		catch 
 		{
 			_enabled = false;
 		}
