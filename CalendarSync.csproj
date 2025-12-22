@@ -58,4 +58,12 @@
     <Folder Include="build\" />
   </ItemGroup>
 
+  <Target Name="RelocateDlls" AfterTargets="Build">
+    <ItemGroup>
+      <RootDlls Include="$(OutputPath)*.dll" Exclude="$(OutputPath)bin\\**" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutputPath)bin\" />
+    <Move SourceFiles="@(RootDlls)" DestinationFolder="$(OutputPath)bin\" Condition="@(RootDlls->Count()) != 0" />
+  </Target>
+
 </Project>

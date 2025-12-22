@@ -4,12 +4,26 @@ using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
 using System.Diagnostics;
+using System.Reflection;
 using System.Windows.Forms;
 
 namespace CalendarSync;
 
 public class Program
 {
+	private static readonly Lazy<string> BinDirectory = new(() =>
+	{
+		var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin");
+		if (!Directory.Exists(path))
+			Directory.CreateDirectory(path);
+		return path;
+	});
+
+	static Program()
+	{
+		AppDomain.CurrentDomain.AssemblyResolve += ResolveFromBin;
+	}
+
 	[STAThread]
 	public static void Main(string[] args)
 	{
@@ -111,5 +125,14 @@ public class Program
 		}
 		catch { }
 		EventRecorder.WriteEntry(ex.ToString(), EventLogEntryType.Error);
+	}
+
+	private static Assembly? ResolveFromBin(object? _, ResolveEventArgs args)
+	{
+		var assemblyName = new AssemblyName(args.Name);
+		var candidatePath = Path.Combine(BinDirectory.Value, $"{assemblyName.Name}.dll");
+		if (File.Exists(candidatePath))
+			return Assembly.LoadFrom(candidatePath);
+		return null;
 	}
 }
