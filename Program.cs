@@ -23,6 +23,7 @@ public class Program
 
 	static Program()
 	{
+		BootstrapDiagnostics.Initialize();
 		AppDomain.CurrentDomain.AssemblyResolve += ResolveFromBin;
 		AssemblyLoadContext.Default.Resolving += ResolveFromBin;
 		AssemblyLoadContext.Default.ResolvingUnmanagedDll += ResolveNativeFromBin;
@@ -31,10 +32,14 @@ public class Program
 	[STAThread]
 	public static void Main(string[] args)
 	{
+		BootstrapDiagnostics.Log("Main entry reached.");
 		EventRecorder.Initialize();
 		using var singleInstanceMutex = new System.Threading.Mutex(true, "CalendarSync", out var createdNewInstance);
 		if (!createdNewInstance)
+		{
+			BootstrapDiagnostics.Log("Another instance detected, exiting.");
 			return;
+		}
 		SubscribeToGlobalExceptions();
 		EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
 
@@ -56,6 +61,7 @@ public class Program
 		};
 
 		host.StartAsync().GetAwaiter().GetResult();
+		BootstrapDiagnostics.Log("Host started, entering message loop.");
 		Application.Run();
 		EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
 	}
@@ -67,6 +73,7 @@ public class Program
 						var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
 						if (!File.Exists(configPath))
 						{
+							BootstrapDiagnostics.Log($"config.json missing at {configPath}.");
 							EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
 							throw new FileNotFoundException("config.json not found in the executable directory.");
 						}
@@ -105,6 +112,7 @@ public class Program
 								.CreateLogger();
 
 						services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
+						BootstrapDiagnostics.Log("Services configured successfully.");
 						EventRecorder.WriteEntry("Configuration loaded", EventLogEntryType.Information);
 					});
 
@@ -128,6 +136,7 @@ public class Program
 			Log.Fatal(ex, "Unhandled exception");
 		}
 		catch { }
+		BootstrapDiagnostics.Log($"Unhandled exception captured: {ex}");
 		EventRecorder.WriteEntry(ex.ToString(), EventLogEntryType.Error);
 	}
 
@@ -148,15 +157,25 @@ public class Program
 	{
 		var candidatePath = Path.Combine(BinDirectory.Value, $"{assemblyName.Name}.dll");
 		if (!File.Exists(candidatePath))
+		{
+			BootstrapDiagnostics.LogAssemblyProbe(assemblyName.Name ?? "unknown", candidatePath, false, false);
 			return null;
-		return AssemblyLoadContext.Default.LoadFromAssemblyPath(candidatePath);
+		}
+		var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(candidatePath);
+		BootstrapDiagnostics.LogAssemblyProbe(assemblyName.Name ?? "unknown", candidatePath, true, assembly != null);
+		return assembly;
 	}
 
 	private static IntPtr ResolveNativeFromBin(Assembly _, string name)
 	{
 		var candidatePath = Path.Combine(BinDirectory.Value, $"{name}.dll");
 		if (!File.Exists(candidatePath))
+		{
+			BootstrapDiagnostics.LogNativeProbe(name, candidatePath, false, false);
 			return IntPtr.Zero;
-		return NativeLibrary.Load(candidatePath);
+		}
+		var handle = NativeLibrary.Load(candidatePath);
+		BootstrapDiagnostics.LogNativeProbe(name, candidatePath, true, handle != IntPtr.Zero);
+		return handle;
 	}
 }
