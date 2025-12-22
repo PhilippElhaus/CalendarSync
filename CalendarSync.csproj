@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<OutputType>WinExe</OutputType>
@@ -41,7 +41,7 @@
 			<Link>Readme.txt</Link>
 			<CopyToOutputDirectory Condition="'$(Configuration)'=='Release'">PreserveNewest</CopyToOutputDirectory>
 		</None>
-		<None Update="config.json">
+		<None Update="build\config.json">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
 		<None Update="ico\cal64.ico">
@@ -58,18 +58,14 @@
 		</None>
 	</ItemGroup>
 
-	<ItemGroup>
-		<Folder Include="build\" />
-	</ItemGroup>
-
 	<Target Name="RelocateDlls" AfterTargets="Build">
 		<ItemGroup>
 			<RootDlls Include="$(OutputPath)*.dll" Exclude="$(OutputPath)bin\**" />
 			<RuntimeDlls Include="$(OutputPath)runtimes\win\lib\net8.0\*.dll" />
 		</ItemGroup>
 		<MakeDir Directories="$(OutputPath)bin\" />
-		<Move SourceFiles="@(RootDlls)" DestinationFolder="$(OutputPath)bin\" Condition="@(RootDlls->Count()) != 0" />
-		<Move SourceFiles="@(RuntimeDlls)" DestinationFolder="$(OutputPath)bin\" Condition="@(RuntimeDlls->Count()) != 0" />
+		<Move SourceFiles="@(RootDlls)" DestinationFolder="$(OutputPath)bin\" Condition="@(RootDlls-&gt;Count()) != 0" />
+		<Move SourceFiles="@(RuntimeDlls)" DestinationFolder="$(OutputPath)bin\" Condition="@(RuntimeDlls-&gt;Count()) != 0" />
 	</Target>
 
 	<Target Name="RemovePdbFiles" AfterTargets="RelocateDlls">
