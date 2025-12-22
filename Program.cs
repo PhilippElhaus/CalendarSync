@@ -4,6 +4,8 @@ using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Runtime.Loader;
 using System.Reflection;
 using System.Windows.Forms;
 
@@ -22,6 +24,8 @@ public class Program
 	static Program()
 	{
 		AppDomain.CurrentDomain.AssemblyResolve += ResolveFromBin;
+		AssemblyLoadContext.Default.Resolving += ResolveFromBin;
+		AssemblyLoadContext.Default.ResolvingUnmanagedDll += ResolveNativeFromBin;
 	}
 
 	[STAThread]
@@ -129,10 +133,30 @@ public class Program
 
 	private static Assembly? ResolveFromBin(object? _, ResolveEventArgs args)
 	{
-		var assemblyName = new AssemblyName(args.Name);
-		var candidatePath = Path.Combine(BinDirectory.Value, $"{assemblyName.Name}.dll");
-		if (File.Exists(candidatePath))
-			return Assembly.LoadFrom(candidatePath);
+		return ResolveManagedFromBin(new AssemblyName(args.Name));
+	}
+
+	private static Assembly? ResolveFromBin(AssemblyLoadContext context, AssemblyName assemblyName)
+	{
+		var resolved = ResolveManagedFromBin(assemblyName);
+		if (resolved != null)
+			return resolved;
 		return null;
+	}
+
+	private static Assembly? ResolveManagedFromBin(AssemblyName assemblyName)
+	{
+		var candidatePath = Path.Combine(BinDirectory.Value, $"{assemblyName.Name}.dll");
+		if (!File.Exists(candidatePath))
+			return null;
+		return AssemblyLoadContext.Default.LoadFromAssemblyPath(candidatePath);
+	}
+
+	private static IntPtr ResolveNativeFromBin(Assembly _, string name)
+	{
+		var candidatePath = Path.Combine(BinDirectory.Value, $"{name}.dll");
+		if (!File.Exists(candidatePath))
+			return IntPtr.Zero;
+		return NativeLibrary.Load(candidatePath);
 	}
 }
