@@ -32,38 +32,46 @@ public class Program
 	[STAThread]
 	public static void Main(string[] args)
 	{
-		BootstrapDiagnostics.Log("Main entry reached.");
-		EventRecorder.Initialize();
-		using var singleInstanceMutex = new System.Threading.Mutex(true, "CalendarSync", out var createdNewInstance);
-		if (!createdNewInstance)
+		try
 		{
-			BootstrapDiagnostics.Log("Another instance detected, exiting.");
-			return;
+			BootstrapDiagnostics.Log("Main entry reached.");
+			EventRecorder.Initialize();
+			using var singleInstanceMutex = new System.Threading.Mutex(true, "CalendarSync", out var createdNewInstance);
+			if (!createdNewInstance)
+			{
+				BootstrapDiagnostics.Log("Another instance detected, exiting.");
+				return;
+			}
+			SubscribeToGlobalExceptions();
+			EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
+
+			using var host = CreateHostBuilder(args).Build();
+			var tray = host.Services.GetRequiredService<TrayIconManager>();
+			var service = host.Services.GetRequiredService<CalendarSyncService>();
+
+			tray.ExitClicked += async (_, _) =>
+			{
+				EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
+				await host.StopAsync().ConfigureAwait(false);
+				tray.Dispose();
+				Application.Exit();
+			};
+
+			tray.FullResyncClicked += async (_, _) =>
+			{
+				await service.TriggerFullResyncAsync().ConfigureAwait(false);
+			};
+
+			host.StartAsync().GetAwaiter().GetResult();
+			BootstrapDiagnostics.Log("Host started, entering message loop.");
+			Application.Run();
+			EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
 		}
-		SubscribeToGlobalExceptions();
-		EventRecorder.WriteEntry("Application startup", EventLogEntryType.Information);
-
-		using var host = CreateHostBuilder(args).Build();
-		var tray = host.Services.GetRequiredService<TrayIconManager>();
-		var service = host.Services.GetRequiredService<CalendarSyncService>();
-
-		tray.ExitClicked += async (_, _) =>
+		catch (Exception ex)
 		{
-			EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
-			await host.StopAsync().ConfigureAwait(false);
-			tray.Dispose();
-			Application.Exit();
-		};
-
-		tray.FullResyncClicked += async (_, _) =>
-		{
-			await service.TriggerFullResyncAsync().ConfigureAwait(false);
-		};
-
-		host.StartAsync().GetAwaiter().GetResult();
-		BootstrapDiagnostics.Log("Host started, entering message loop.");
-		Application.Run();
-		EventRecorder.WriteEntry("Application shutdown", EventLogEntryType.Information);
+			BootstrapDiagnostics.Log($"Fatal exception in Main: {ex}");
+			throw;
+		}
 	}
 
 	public static IHostBuilder CreateHostBuilder(string[] args) =>
