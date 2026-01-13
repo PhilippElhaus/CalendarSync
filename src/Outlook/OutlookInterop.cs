@@ -59,7 +59,7 @@ public partial class CalendarSyncService
 		try
 		{
 			var clsid = OutlookApplicationClsid;
-			var hr = GetActiveObjectNative(ref clsid, IntPtr.Zero, out var activeObject);
+			var hr = GetActiveObject(ref clsid, IntPtr.Zero, out var activeObject);
 			if (hr < 0)
 			{
 				Marshal.ThrowExceptionForHR(hr);

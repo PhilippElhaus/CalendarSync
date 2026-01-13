@@ -40,8 +40,8 @@ public partial class CalendarSyncService : BackgroundService
 	private CancellationToken _serviceStoppingToken = CancellationToken.None;
 	private static readonly Guid OutlookApplicationClsid = new("0006F03A-0000-0000-C000-000000000046");
 
-	[DllImport("oleaut32.dll")]
-	private static extern int GetActiveObjectNative(ref Guid rclsid, IntPtr pvReserved, [MarshalAs(UnmanagedType.IUnknown)] out object? ppunk);
+	[DllImport("oleaut32.dll", EntryPoint = "GetActiveObject")]
+	private static extern int GetActiveObject(ref Guid rclsid, IntPtr pvReserved, [MarshalAs(UnmanagedType.IUnknown)] out object? ppunk);
 
 	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger, TrayIconManager tray)
 	{
