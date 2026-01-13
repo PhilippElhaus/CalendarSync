@@ -106,17 +106,11 @@ public class Program
 							serilogLevel = parsedLevel;
 						}
 						var logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sync.log");
+						var oldLogFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sync.log.old");
 
 						var logger = new LoggerConfiguration()
 								.MinimumLevel.Is(serilogLevel)
-									.WriteTo.File(
-									logFilePath,
-									rollOnFileSizeLimit: true,
-									fileSizeLimitBytes: 1_048_576,
-									rollingInterval: RollingInterval.Infinite,
-									retainedFileCountLimit: 1,
-									shared: true
-									)
+								.WriteTo.Sink(new TwoFileRollingSink(logFilePath, oldLogFilePath, 1_048_576))
 								.CreateLogger();
 
 						services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));

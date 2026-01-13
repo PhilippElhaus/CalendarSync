@@ -14,19 +14,19 @@ public static class StaTask
 			try
 			{
 				action();
-				tcs.SetResult();
+				tcs.TrySetResult();
 			}
 			catch (OperationCanceledException oce)
 			{
-				tcs.SetCanceled(oce.CancellationToken);
+				tcs.TrySetCanceled(oce.CancellationToken);
 			}
 			catch (ThreadInterruptedException)
 			{
-				tcs.SetCanceled(token);
+				tcs.TrySetCanceled(token);
 			}
 			catch (Exception ex)
 			{
-				tcs.SetException(ex);
+				tcs.TrySetException(ex);
 			}
 		});
 		thread.SetApartmentState(ApartmentState.STA);
@@ -57,19 +57,19 @@ public static class StaTask
 			try
 			{
 				var result = func();
-				tcs.SetResult(result);
+				tcs.TrySetResult(result);
 			}
 			catch (OperationCanceledException oce)
 			{
-				tcs.SetCanceled(oce.CancellationToken);
+				tcs.TrySetCanceled(oce.CancellationToken);
 			}
 			catch (ThreadInterruptedException)
 			{
-				tcs.SetCanceled(token);
+				tcs.TrySetCanceled(token);
 			}
 			catch (Exception ex)
 			{
-				tcs.SetException(ex);
+				tcs.TrySetException(ex);
 			}
 		});
 		thread.SetApartmentState(ApartmentState.STA);
