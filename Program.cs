@@ -32,6 +32,7 @@ public class Program
 	[STAThread]
 	public static void Main(string[] args)
 	{
+		Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 		try
 		{
 			BootstrapDiagnostics.Log("Main entry reached.");
@@ -70,7 +71,20 @@ public class Program
 		catch (Exception ex)
 		{
 			BootstrapDiagnostics.Log($"Fatal exception in Main: {ex}");
-			throw;
+			EventRecorder.WriteEntry($"Fatal startup error: {ex}", EventLogEntryType.Error);
+			try
+			{
+				MessageBox.Show(
+					"CalendarSync failed to start. Check bootstrap.log and sync.log in the application directory for details.",
+					"CalendarSync Startup Error",
+					MessageBoxButtons.OK,
+					MessageBoxIcon.Error);
+			}
+			catch
+			{
+			}
+
+			Environment.ExitCode = 1;
 		}
 	}
 
