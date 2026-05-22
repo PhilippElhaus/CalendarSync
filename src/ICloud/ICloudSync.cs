@@ -81,7 +81,7 @@ public partial class CalendarSyncService
 			var calEvent = CreateCalendarEvent(dto, uid);
 			var calendar = new Calendar { Events = { calEvent } };
 			var serializer = new CalendarSerializer();
-			var newIcs = serializer.SerializeToString(calendar);
+			var newIcs = serializer.SerializeToString(calendar) ?? string.Empty;
 
 			var eventUrl = $"{calendarUrl}{uid}.ics";
 

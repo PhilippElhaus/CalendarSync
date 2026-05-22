@@ -34,20 +34,20 @@ public partial class CalendarSyncService
 		}
 
 		var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"series '{appt.Subject}' start");
-                var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
-                var seriesAllDay = DetermineAllDay(baseStartLocal, baseEndLocal, appt.AllDayEvent);
-                var baseDuration = baseEndUtc - baseStartUtc;
-                if (baseDuration <= TimeSpan.Zero)
-                {
-                        _logger.LogWarning("Recurrence duration invalid for '{Subject}'. Falling back to 30 minutes.", appt.Subject);
-                        baseDuration = TimeSpan.FromMinutes(30);
-                }
+		var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
+		var seriesAllDay = DetermineAllDay(baseStartLocal, baseEndLocal, appt.AllDayEvent);
+		var baseDuration = baseEndUtc - baseStartUtc;
+		if (baseDuration <= TimeSpan.Zero)
+		{
+			_logger.LogWarning("Recurrence duration invalid for '{Subject}'. Falling back to 30 minutes.", appt.Subject);
+			baseDuration = TimeSpan.FromMinutes(30);
+		}
 
-                var baseLocalDuration = baseEndLocal - baseStartLocal;
-                if (baseLocalDuration <= TimeSpan.Zero)
-                {
-                        baseLocalDuration = baseDuration;
-                }
+		var baseLocalDuration = baseEndLocal - baseStartLocal;
+		if (baseLocalDuration <= TimeSpan.Zero)
+		{
+			baseLocalDuration = baseDuration;
+		}
 
 		CalDateTime startCal;
 		CalDateTime endCal;
@@ -75,8 +75,10 @@ public partial class CalendarSyncService
 
 		var utcFrom = ConvertFromSourceLocalToUtc(from);
 		var utcTo = ConvertFromSourceLocalToUtc(to);
-                var occurrences = calEvent.GetOccurrences(utcFrom, utcTo);
-                AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay);
+		var fromCal = new CalDateTime(utcFrom, CalDateTime.UtcTzId);
+		var toCal = new CalDateTime(utcTo, CalDateTime.UtcTzId);
+		var occurrences = calEvent.GetOccurrences(fromCal, toCal);
+		AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay);
 
 		return results;
 	}
