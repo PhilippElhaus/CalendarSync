@@ -12,9 +12,12 @@
 		<ApplicationIcon>ico\cal64.ico</ApplicationIcon>
 		<PlatformTarget>x86</PlatformTarget>
 
-		<OutputPath>Z:\Calendar\</OutputPath>
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<OutputPath Condition="'$(OutputPath)'==''">$(MSBuildProjectDirectory)\bin\$(Configuration)\</OutputPath>
 	</PropertyGroup>
 
 	<PropertyGroup Condition="'$(Configuration)'=='Release'">
@@ -22,13 +25,13 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Ical.Net" Version="5.0.0-pre.41" />
+		<PackageReference Include="Ical.Net" Version="5.2.2" />
 		<PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
 		<PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
-		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-		<PackageReference Include="Serilog" Version="4.2.0" />
-		<PackageReference Include="Serilog.Extensions.Logging" Version="9.0.1" />
-		<PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+		<PackageReference Include="Serilog" Version="4.3.1" />
+		<PackageReference Include="Serilog.Extensions.Logging" Version="8.0.0" />
+		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
 	</ItemGroup>
 
 	<ItemGroup>
