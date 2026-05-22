@@ -77,7 +77,9 @@ public partial class CalendarSyncService
 		var utcTo = ConvertFromSourceLocalToUtc(to);
 		var fromCal = new CalDateTime(utcFrom, CalDateTime.UtcTzId);
 		var toCal = new CalDateTime(utcTo, CalDateTime.UtcTzId);
-		var occurrences = calEvent.GetOccurrences(fromCal, toCal);
+        var occurrences = calEvent
+		.GetOccurrences(fromCal)
+		.Where(o => o.Period.StartTime != null && o.Period.StartTime.CompareTo(toCal) < 0);
 		AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay);
 
 		return results;
