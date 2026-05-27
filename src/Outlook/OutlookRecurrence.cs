@@ -27,15 +27,16 @@ public partial class CalendarSyncService
 			return results;
 		}
 
-		var rule = BuildRecurrenceRule(pattern, appt.Subject);
+		var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"series '{appt.Subject}' start");
+		var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
+		var seriesAllDay = DetermineAllDay(baseStartLocal, baseEndLocal, appt.AllDayEvent);
+
+		var rule = BuildRecurrenceRule(pattern, appt.Subject, seriesAllDay);
 		if (rule == null)
 		{
 			return results;
 		}
 
-		var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"series '{appt.Subject}' start");
-		var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
-		var seriesAllDay = DetermineAllDay(baseStartLocal, baseEndLocal, appt.AllDayEvent);
 		var baseDuration = baseEndUtc - baseStartUtc;
 		if (baseDuration <= TimeSpan.Zero)
 		{
@@ -59,27 +60,28 @@ public partial class CalendarSyncService
 		}
 		else
 		{
-			startCal = new CalDateTime(baseStartUtc, CalDateTime.UtcTzId);
-			endCal = new CalDateTime(baseEndUtc, CalDateTime.UtcTzId);
+			startCal = new CalDateTime(DateTime.SpecifyKind(baseStartLocal, DateTimeKind.Unspecified), true);
+			endCal = new CalDateTime(DateTime.SpecifyKind(baseEndLocal, DateTimeKind.Unspecified), true);
 		}
 
 		var calEvent = new CalendarEvent
 		{
 			Start = startCal,
 			End = endCal,
-			RecurrenceRules = new List<RecurrencePattern> { rule }
+			RecurrenceRule = rule
 		};
 
 		var skipDates = new HashSet<DateTime>();
 		ProcessRecurrenceExceptions(pattern, appt, from, to, results, skipDates);
 
-		var utcFrom = ConvertFromSourceLocalToUtc(from);
-		var utcTo = ConvertFromSourceLocalToUtc(to);
-		var fromCal = new CalDateTime(utcFrom, CalDateTime.UtcTzId);
-		var toCal = new CalDateTime(utcTo, CalDateTime.UtcTzId);
-        var occurrences = calEvent
-		.GetOccurrences(fromCal)
-		.Where(o => o.Period.StartTime != null && o.Period.StartTime.CompareTo(toCal) < 0);
+		var fromLocal = DateTime.SpecifyKind(from, DateTimeKind.Unspecified);
+		var toLocal = DateTime.SpecifyKind(to, DateTimeKind.Unspecified);
+		var fromCal = new CalDateTime(fromLocal, !seriesAllDay);
+		var toCal = new CalDateTime(toLocal, !seriesAllDay);
+		var occurrences = calEvent
+			.GetOccurrences(fromCal)
+			.TakeWhile(o => o.Period.StartTime == null || o.Period.StartTime.CompareTo(toCal) < 0)
+			.Where(o => o.Period.StartTime != null);
 		AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay);
 
 		return results;

@@ -3,8 +3,10 @@ using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Xml;
 using System.Xml.Linq;
 
 
@@ -25,7 +27,12 @@ public partial class CalendarSyncService
 
 		try
 		{
-			var response = await client.SendAsync(request).ConfigureAwait(false);
+			using var response = await client.SendAsync(request).ConfigureAwait(false);
+			if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
+			{
+				throw new UnauthorizedAccessException("iCloud authentication failed.");
+			}
+
 			response.EnsureSuccessStatusCode();
 			var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 			var document = XDocument.Parse(content);
@@ -52,10 +59,17 @@ public partial class CalendarSyncService
 				events[uid] = etag;
 			}
 		}
-		catch (Exception ex)
+		catch (HttpRequestException ex)
 		{
-			_logger.LogError(ex, "Failed to parse PROPFIND response.");
+			_logger.LogError(ex, "Failed to retrieve iCloud PROPFIND response.");
+			EventRecorder.WriteEntry("iCloud PROPFIND failed", EventLogEntryType.Error);
+			throw;
+		}
+		catch (XmlException ex)
+		{
+			_logger.LogError(ex, "Failed to parse iCloud PROPFIND response.");
 			EventRecorder.WriteEntry("iCloud response parse failed", EventLogEntryType.Error);
+			throw new InvalidOperationException("iCloud PROPFIND response was not valid XML.", ex);
 		}
 
 		_logger.LogInformation("Parsed {Count} events from PROPFIND response.", events.Count);

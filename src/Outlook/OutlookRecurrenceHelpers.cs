@@ -1,5 +1,6 @@
 using Ical.Net;
 using Ical.Net.DataTypes;
+using Ical.Net.Evaluation;
 using Microsoft.Extensions.Logging;
 using System.Runtime.InteropServices;
 using Outlook = Microsoft.Office.Interop.Outlook;
@@ -21,7 +22,7 @@ public partial class CalendarSyncService
 		}
 	}
 
-	private RecurrencePattern? BuildRecurrenceRule(Outlook.RecurrencePattern pattern, string? subject)
+	private RecurrencePattern? BuildRecurrenceRule(Outlook.RecurrencePattern pattern, string? subject, bool seriesAllDay)
 	{
 		var rule = new RecurrencePattern
 		{
@@ -58,7 +59,7 @@ public partial class CalendarSyncService
 			return null;
 		}
 
-		ApplyPatternEnd(rule, pattern);
+		ApplyPatternEnd(rule, pattern, seriesAllDay);
 		return rule;
 	}
 
@@ -170,7 +171,7 @@ public partial class CalendarSyncService
 		return instance == 5 ? -1 : instance;
 	}
 
-	private void ApplyPatternEnd(RecurrencePattern rule, Outlook.RecurrencePattern pattern)
+	private void ApplyPatternEnd(RecurrencePattern rule, Outlook.RecurrencePattern pattern, bool seriesAllDay)
 	{
 		if (pattern.NoEndDate)
 		{
@@ -183,7 +184,10 @@ public partial class CalendarSyncService
 		}
 		else if (pattern.PatternEndDate != DateTime.MinValue)
 		{
-			rule.Until = new CalDateTime(pattern.PatternEndDate.ToUniversalTime());
+			var patternEndDate = DateTime.SpecifyKind(pattern.PatternEndDate.Date, DateTimeKind.Unspecified);
+			rule.Until = seriesAllDay
+				? new CalDateTime(patternEndDate, false)
+				: new CalDateTime(patternEndDate.AddDays(1).AddTicks(-1), true);
 		}
 	}
 
@@ -252,67 +256,94 @@ public partial class CalendarSyncService
 			DateTime baseStartLocal,
 			bool seriesAllDay)
 	{
-		foreach (var occ in occurrences)
+		try
 		{
-			var startUtc = DateTime.SpecifyKind(occ.Period.StartTime.AsUtc, DateTimeKind.Utc);
-			var endUtc = DateTime.SpecifyKind(occ.Period.EndTime?.AsUtc ?? startUtc.Add(baseDuration), DateTimeKind.Utc);
-			var startLocal = ConvertUtcToSourceLocal(startUtc);
-			var endLocal = ConvertUtcToSourceLocal(endUtc);
-			if (skipDates.Contains(startLocal.Date))
+			foreach (var occ in occurrences)
 			{
-				continue;
-			}
-
-			if (!seriesAllDay)
-			{
-				var originalStartLocal = startLocal;
-				var originalEndLocal = endLocal;
-				var originalStartUtc = startUtc;
-				var originalEndUtc = endUtc;
-				var desiredStartLocal = DateTime.SpecifyKind(startLocal.Date.Add(baseStartLocal.TimeOfDay), DateTimeKind.Unspecified);
-				var desiredEndLocal = desiredStartLocal + baseLocalDuration;
-
-				if (Math.Abs((startLocal - desiredStartLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+				var periodStart = occ.Period.StartTime;
+				if (periodStart == null)
 				{
-					_logger.LogInformation(
+					continue;
+				}
+
+				var startLocal = DateTime.SpecifyKind(periodStart.Value, DateTimeKind.Unspecified);
+				var endLocal = DateTime.SpecifyKind(occ.Period.EndTime?.Value ?? startLocal.Add(baseLocalDuration), DateTimeKind.Unspecified);
+				if (endLocal <= startLocal)
+				{
+					var fallbackDuration = baseLocalDuration > TimeSpan.Zero ? baseLocalDuration : baseDuration;
+					endLocal = startLocal.Add(fallbackDuration);
+				}
+
+				if (skipDates.Contains(startLocal.Date))
+				{
+					continue;
+				}
+
+				if (!seriesAllDay)
+				{
+					var desiredStartLocal = DateTime.SpecifyKind(startLocal.Date.Add(baseStartLocal.TimeOfDay), DateTimeKind.Unspecified);
+					var desiredEndLocal = desiredStartLocal + baseLocalDuration;
+
+					if (Math.Abs((startLocal - desiredStartLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
+					{
+						_logger.LogDebug(
 							"Adjusted recurring occurrence for '{Subject}' on {Date}: expected {Expected:o} but computed {Computed:o}.",
 							appt.Subject,
 							desiredStartLocal.Date,
 							desiredStartLocal,
 							startLocal);
-				}
+					}
 
-				var invalidTime = _sourceTimeZone.IsInvalidTime(desiredStartLocal) || _sourceTimeZone.IsInvalidTime(desiredEndLocal);
-				var ambiguousTime = _sourceTimeZone.IsAmbiguousTime(desiredStartLocal) || _sourceTimeZone.IsAmbiguousTime(desiredEndLocal);
+					var invalidTime = _sourceTimeZone.IsInvalidTime(desiredStartLocal) || _sourceTimeZone.IsInvalidTime(desiredEndLocal);
+					var ambiguousTime = _sourceTimeZone.IsAmbiguousTime(desiredStartLocal) || _sourceTimeZone.IsAmbiguousTime(desiredEndLocal);
 
-				if (invalidTime || ambiguousTime)
-				{
-					_logger.LogWarning(
-							"Skipping recurrence adjustment for '{Subject}' on {Date} because desired local window {DesiredStart:o}-{DesiredEnd:o} is {State} in timezone {TimeZone}. Keeping computed values {ComputedStart:o}-{ComputedEnd:o}.",
+					if (invalidTime)
+					{
+						_logger.LogWarning(
+							"Skipping recurring occurrence for '{Subject}' on {Date} because local window {DesiredStart:o}-{DesiredEnd:o} is invalid in timezone {TimeZone}.",
 							appt.Subject,
 							desiredStartLocal.Date,
 							desiredStartLocal,
 							desiredEndLocal,
-							invalidTime ? "invalid" : "ambiguous",
-							_sourceTimeZone.Id,
-							originalStartLocal,
-							originalEndLocal);
-					startLocal = originalStartLocal;
-					endLocal = originalEndLocal;
-					startUtc = originalStartUtc;
-					endUtc = originalEndUtc;
-				}
-				else
-				{
+							_sourceTimeZone.Id);
+						continue;
+					}
+
+					if (ambiguousTime)
+					{
+						_logger.LogWarning(
+							"Recurring occurrence for '{Subject}' on {Date} has ambiguous local window {DesiredStart:o}-{DesiredEnd:o} in timezone {TimeZone}. Converting with the system default offset.",
+							appt.Subject,
+							desiredStartLocal.Date,
+							desiredStartLocal,
+							desiredEndLocal,
+							_sourceTimeZone.Id);
+					}
+
 					startLocal = desiredStartLocal;
 					endLocal = desiredEndLocal;
-					startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
-					endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
 				}
-			}
 
-			var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
-			results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null));
+				if (_sourceTimeZone.IsInvalidTime(startLocal) || _sourceTimeZone.IsInvalidTime(endLocal))
+				{
+					_logger.LogWarning(
+						"Skipping recurring occurrence for '{Subject}' because local window {Start:o}-{End:o} is invalid in timezone {TimeZone}.",
+						appt.Subject,
+						startLocal,
+						endLocal,
+						_sourceTimeZone.Id);
+					continue;
+				}
+
+				var startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
+				var endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
+				var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
+				results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null));
+			}
+		}
+		catch (EvaluationOutOfRangeException ex)
+		{
+			_logger.LogWarning(ex, "Stopped recurrence expansion for '{Subject}' after Ical.Net reached its evaluation range.", appt.Subject);
 		}
 	}
 }
