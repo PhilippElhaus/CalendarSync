@@ -18,5 +18,14 @@ public class SyncConfig
 	public string? TargetTimeZoneId { get; set; }
 	public int RecurrenceExpansionDaysPast { get; set; } = 30;
 	public int RecurrenceExpansionDaysFuture { get; set; } = 30;
+	public string? OutlookBodySyncMode { get; set; }
+	public bool? IncludeOutlookBody { get; set; }
 	public bool IncludeSecondReminder { get; set; } = true;
+}
+
+public enum OutlookBodySyncMode
+{
+	WhenSafe,
+	Never,
+	Always
 }

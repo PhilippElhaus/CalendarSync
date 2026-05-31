@@ -76,6 +76,32 @@ public partial class CalendarSyncService
 		return events;
 	}
 
+	private async Task<string?> GetICloudEventDescriptionAsync(HttpClient client, string eventUrl, CancellationToken token)
+	{
+		try
+		{
+			using var response = await client.GetAsync(eventUrl, token).ConfigureAwait(false);
+			if (!response.IsSuccessStatusCode)
+			{
+				_logger.LogDebug("Unable to preserve existing iCloud description for {EventUrl}: {Status}", eventUrl, response.StatusCode);
+				return null;
+			}
+
+			var ics = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+			var calendar = Calendar.Load(ics);
+			return calendar?.Events?.FirstOrDefault()?.Description;
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			_logger.LogDebug(ex, "Unable to read existing iCloud description for {EventUrl}.", eventUrl);
+			return null;
+		}
+	}
+
 	private CalendarEvent CreateCalendarEvent(OutlookEventDto appt, string uid)
 	{
 		var summary = appt.Subject ?? "No Subject";

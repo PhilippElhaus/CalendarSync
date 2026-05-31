@@ -17,6 +17,7 @@ public partial class CalendarSyncService
 			Outlook.NameSpace? outlookNs = null;
 			Outlook.MAPIFolder? calendar = null;
 			Outlook.Items? items = null;
+			var allItems = new List<Outlook.AppointmentItem>();
 
 			try
 			{
@@ -101,7 +102,6 @@ public partial class CalendarSyncService
 
 				_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
 
-				var allItems = new List<Outlook.AppointmentItem>();
 				var count = 0;
 
 				foreach (var item in items)
@@ -117,6 +117,10 @@ public partial class CalendarSyncService
 						if (item is Outlook.AppointmentItem appt)
 						{
 							allItems.Add(appt);
+						}
+						else if (item != null && Marshal.IsComObject(item))
+						{
+							Marshal.FinalReleaseComObject(item);
 						}
 					}
 					catch (Exception ex)
@@ -136,8 +140,26 @@ public partial class CalendarSyncService
 			finally
 			{
 				_logger.LogDebug("Cleaning up Outlook COM objects.");
+				ReleaseOutlookAppointmentItems(allItems);
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
 			}
 		}, cts.Token);
+	}
+
+	private void ReleaseOutlookAppointmentItems(IEnumerable<Outlook.AppointmentItem> appointments)
+	{
+		foreach (var appointment in appointments)
+		{
+			try
+			{
+				if (Marshal.IsComObject(appointment))
+				{
+					Marshal.FinalReleaseComObject(appointment);
+				}
+			}
+			catch
+			{
+			}
+		}
 	}
 }

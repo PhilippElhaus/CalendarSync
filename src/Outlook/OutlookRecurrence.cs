@@ -15,7 +15,8 @@ public partial class CalendarSyncService
 		bool IsAllDay,
 		string? SubjectOverride,
 		string? BodyOverride,
-		string? LocationOverride);
+		string? LocationOverride,
+		bool BodyWasRead);
 
 	private List<OccurrenceInfo> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to)
 	{

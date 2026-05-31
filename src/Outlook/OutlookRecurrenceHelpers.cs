@@ -216,6 +216,7 @@ public partial class CalendarSyncService
 						if (exStartLocal >= from && exStartLocal <= to)
 						{
 							var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, exceptionItem.AllDayEvent);
+							var body = ReadOutlookBodyIfEnabled(exceptionItem, $"exception '{appt.Subject}'");
 							results.Add(new OccurrenceInfo(
 									exStartLocal,
 									exEndLocal,
@@ -223,8 +224,9 @@ public partial class CalendarSyncService
 									exEndUtc,
 									exAllDay,
 									exceptionItem.Subject,
-									exceptionItem.Body,
-									exceptionItem.Location));
+									body.Body,
+									exceptionItem.Location,
+									body.WasRead));
 							_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
 						}
 					}
@@ -338,7 +340,7 @@ public partial class CalendarSyncService
 				var startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
 				var endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
 				var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
-				results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null));
+				results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null, false));
 			}
 		}
 		catch (EvaluationOutOfRangeException ex)

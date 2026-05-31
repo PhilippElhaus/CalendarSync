@@ -20,7 +20,8 @@ public partial class CalendarSyncService : BackgroundService
 		DateTime StartUtc,
 		DateTime EndUtc,
 		string GlobalId,
-		bool IsAllDay
+		bool IsAllDay,
+		bool BodyWasRead
 	);
 
 	private readonly SyncConfig _config;

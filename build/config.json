@@ -12,5 +12,6 @@
 	"SourceId": "",
 	"EventTag": "",
 	"SourceTimeZoneId": "",
-	"TargetTimeZoneId": ""
+	"TargetTimeZoneId": "",
+	"OutlookBodySyncMode": "WhenSafe"
 }

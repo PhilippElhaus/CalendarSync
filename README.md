@@ -56,7 +56,8 @@ C:\CalendarSync\
     "SourceId": "in_case_you_want_to_sync_from_multiple_calendars",
     "EventTag": "this_marks_an_entry_with_a_prefix_e.g_ [COMPANY]",
     "SourceTimeZoneId": "Europe/Berlin",
-    "TargetTimeZoneId": "Europe/Berlin"
+    "TargetTimeZoneId": "Europe/Berlin",
+    "OutlookBodySyncMode": "WhenSafe"
 }
 ```
 
@@ -91,6 +92,7 @@ High level events are also written to the Windows Event Log under the
 
 - Does not store or sync from iCloud to Outlook
 - Passwords handled via basic auth over HTTPS
+- Reads Outlook appointment bodies only when Outlook/Windows reports that protected COM access should be silent. `OutlookBodySyncMode` supports `WhenSafe`, `Never`, and `Always`; `Always` can bring back Outlook Object Model Guard prompts.
 
 ## Outlook COM Reliability
 

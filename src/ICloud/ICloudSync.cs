@@ -78,12 +78,21 @@ public partial class CalendarSyncService
 				_tray.UpdateText($"Updating... {done}/{total} ({done * 100 / total}%)");
 			}
 
-			var calEvent = CreateCalendarEvent(dto, uid);
+			var eventUrl = $"{calendarUrl}{uid}.ics";
+			var dtoForWrite = dto;
+			if (!dto.BodyWasRead && iCloudEvents.ContainsKey(uid))
+			{
+				var existingDescription = await GetICloudEventDescriptionAsync(client, eventUrl, token).ConfigureAwait(false);
+				if (existingDescription != null)
+				{
+					dtoForWrite = dto with { Body = existingDescription };
+				}
+			}
+
+			var calEvent = CreateCalendarEvent(dtoForWrite, uid);
 			var calendar = new Calendar { Events = { calEvent } };
 			var serializer = new CalendarSerializer();
 			var newIcs = serializer.SerializeToString(calendar) ?? string.Empty;
-
-			var eventUrl = $"{calendarUrl}{uid}.ics";
 
 			using var requestPut = new HttpRequestMessage(HttpMethod.Put, eventUrl)
 			{

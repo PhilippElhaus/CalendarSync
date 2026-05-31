@@ -40,16 +40,18 @@ public partial class CalendarSyncService
 					continue;
 				}
 
+				var body = ReadOutlookBodyIfEnabled(appt, $"single '{appt.Subject}'");
 				var dtoSingle = new OutlookEventDto(
 					appt.Subject ?? string.Empty,
-					appt.Body ?? string.Empty,
+					body.Body,
 					appt.Location ?? string.Empty,
 					startLocal,
 					endLocal,
 					startUtc,
 					endUtc,
 					appt.GlobalAppointmentID ?? Guid.NewGuid().ToString(),
-					appt.AllDayEvent
+					appt.AllDayEvent,
+					body.WasRead
 				);
 
 				dtoSingle = EnsureEventConsistency(dtoSingle, $"single '{appt.Subject}'");

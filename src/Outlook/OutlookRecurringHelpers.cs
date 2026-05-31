@@ -54,7 +54,7 @@ public partial class CalendarSyncService
 
 		var occurrences = ExpandRecurrenceManually(seriesItem, patternStart, patternEnd);
 		var baseSubject = seriesItem.Subject ?? string.Empty;
-		var baseBody = seriesItem.Body ?? string.Empty;
+		var baseBody = ReadOutlookBodyIfEnabled(seriesItem, $"recurring '{baseSubject}'");
 		var baseLocation = seriesItem.Location ?? string.Empty;
 		foreach (var occurrence in occurrences)
 		{
@@ -62,16 +62,19 @@ public partial class CalendarSyncService
 			{
 				continue;
 			}
+			var body = occurrence.BodyOverride ?? baseBody.Body;
+			var bodyWasRead = occurrence.BodyOverride != null ? occurrence.BodyWasRead : baseBody.WasRead;
 			var dto = new OutlookEventDto(
 				occurrence.SubjectOverride ?? baseSubject,
-				occurrence.BodyOverride ?? baseBody,
+				body,
 				occurrence.LocationOverride ?? baseLocation,
 				occurrence.StartLocal,
 				occurrence.EndLocal,
 				occurrence.StartUtc,
 				occurrence.EndUtc,
 				globalId,
-				occurrence.IsAllDay
+				occurrence.IsAllDay,
+				bodyWasRead
 			);
 			dto = EnsureEventConsistency(dto, $"recurring '{dto.Subject}'");
 			var sanitizedDto = dto with { StartLocal = dto.StartLocal, EndLocal = dto.EndLocal };
