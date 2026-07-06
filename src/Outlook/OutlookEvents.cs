@@ -8,7 +8,7 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts)
+	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts, CancellationToken token)
 	{
 		var events = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
 		var expandedRecurringIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -19,6 +19,8 @@ public partial class CalendarSyncService
 
 		foreach (var appt in appts)
 		{
+			token.ThrowIfCancellationRequested();
+
 			try
 			{
 				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
@@ -28,7 +30,7 @@ public partial class CalendarSyncService
 
 				if (appt.IsRecurring)
 				{
-					ProcessRecurringAppointment(appt, events, expandedRecurringIds, syncStart, syncEnd);
+					ProcessRecurringAppointment(appt, events, expandedRecurringIds, syncStart, syncEnd, token);
 					continue;
 				}
 
@@ -56,6 +58,10 @@ public partial class CalendarSyncService
 
 				dtoSingle = EnsureEventConsistency(dtoSingle, $"single '{appt.Subject}'");
 				AddEventChunks(events, dtoSingle.GlobalId ?? appt.GlobalAppointmentID ?? Guid.NewGuid().ToString(), dtoSingle);
+			}
+			catch (OperationCanceledException)
+			{
+				throw;
 			}
 			catch (Exception ex)
 			{

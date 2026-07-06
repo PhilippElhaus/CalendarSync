@@ -8,11 +8,13 @@ public static class StaTask
 {
 	public static Task Run(Action action, CancellationToken token)
 	{
-		var tcs = new TaskCompletionSource();
+		var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var registration = token.Register(() => tcs.TrySetCanceled(token));
 		var thread = new Thread(() =>
 		{
 			try
 			{
+				token.ThrowIfCancellationRequested();
 				action();
 				tcs.TrySetResult();
 			}
@@ -28,34 +30,26 @@ public static class StaTask
 			{
 				tcs.TrySetException(ex);
 			}
+			finally
+			{
+				registration.Dispose();
+			}
 		});
 		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
 		thread.Start();
-		token.Register(() =>
-		{
-			tcs.TrySetCanceled(token);
-			if (thread.IsAlive)
-			{
-				try
-				{
-					thread.Interrupt();
-				}
-				catch
-				{
-				}
-			}
-		});
 		return tcs.Task;
 	}
 
 	public static Task<T> Run<T>(Func<T> func, CancellationToken token)
 	{
-		var tcs = new TaskCompletionSource<T>();
+		var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var registration = token.Register(() => tcs.TrySetCanceled(token));
 		var thread = new Thread(() =>
 		{
 			try
 			{
+				token.ThrowIfCancellationRequested();
 				var result = func();
 				tcs.TrySetResult(result);
 			}
@@ -71,24 +65,14 @@ public static class StaTask
 			{
 				tcs.TrySetException(ex);
 			}
+			finally
+			{
+				registration.Dispose();
+			}
 		});
 		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
 		thread.Start();
-		token.Register(() =>
-		{
-			tcs.TrySetCanceled(token);
-			if (thread.IsAlive)
-			{
-				try
-				{
-					thread.Interrupt();
-				}
-				catch
-				{
-				}
-			}
-		});
 		return tcs.Task;
 	}
 }

@@ -11,6 +11,12 @@ public partial class CalendarSyncService
 		var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
 		cts.CancelAfter(TimeSpan.FromMinutes(2));
 
+		if (!_outlookComGate.Wait(0))
+		{
+			_logger.LogWarning("Previous Outlook COM operation has not exited yet; skipping this sync cycle to avoid overlapping Outlook automation.");
+			throw new OutlookOperationInProgressException();
+		}
+
 		return StaTask.Run(() =>
 		{
 			Outlook.Application? outlookApp = null;
@@ -106,9 +112,11 @@ public partial class CalendarSyncService
 
 				foreach (var item in items)
 				{
+					cts.Token.ThrowIfCancellationRequested();
+
 					if (count++ > 5000)
 					{
-						_logger.LogWarning("Aborting calendar item scan after 1000 items to prevent hangs.");
+						_logger.LogWarning("Aborting calendar item scan after 5000 items to prevent hangs.");
 						break;
 					}
 
@@ -131,7 +139,7 @@ public partial class CalendarSyncService
 
 				_logger.LogInformation("Collected {Count} Outlook items after manual date filter.", allItems.Count);
 
-				var outlookEvents = GetOutlookEventsFromList(allItems);
+				var outlookEvents = GetOutlookEventsFromList(allItems, cts.Token);
 
 				_logger.LogInformation("Expanded to {Count} atomic Outlook events.", outlookEvents.Count);
 
@@ -142,6 +150,7 @@ public partial class CalendarSyncService
 				_logger.LogDebug("Cleaning up Outlook COM objects.");
 				ReleaseOutlookAppointmentItems(allItems);
 				CleanupOutlook(outlookApp, outlookNs, calendar, items);
+				_outlookComGate.Release();
 			}
 		}, cts.Token);
 	}
@@ -160,6 +169,14 @@ public partial class CalendarSyncService
 			catch
 			{
 			}
+		}
+	}
+
+	private sealed class OutlookOperationInProgressException : Exception
+	{
+		public OutlookOperationInProgressException()
+			: base("Previous Outlook COM operation is still running.")
+		{
 		}
 	}
 }

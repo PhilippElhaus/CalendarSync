@@ -37,6 +37,7 @@ public partial class CalendarSyncService : BackgroundService
 	private readonly TimeZoneInfo _sourceTimeZone;
 	private readonly TimeZoneInfo _targetTimeZone;
 	private readonly SemaphoreSlim _opLock = new(1, 1);
+	private readonly SemaphoreSlim _outlookComGate = new(1, 1);
 	private CancellationTokenSource _currentOpCts = new();
 	private CancellationToken _serviceStoppingToken = CancellationToken.None;
 	private static readonly Guid OutlookApplicationClsid = new("0006F03A-0000-0000-C000-000000000046");
@@ -132,6 +133,10 @@ public partial class CalendarSyncService : BackgroundService
 			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
 			MessageBox.Show("iCloud authorization failed. Check credentials.", "CalendarSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
 		}
+		catch (OutlookOperationInProgressException ex)
+		{
+			_logger.LogWarning(ex, "Previous Outlook operation is still running. Skipping this sync cycle.");
+		}
 		catch (OperationCanceledException ex)
 		{
 			if (_serviceStoppingToken.IsCancellationRequested)
@@ -171,6 +176,14 @@ public partial class CalendarSyncService : BackgroundService
 			_currentOpCts = new CancellationTokenSource();
 			using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_currentOpCts.Token, _serviceStoppingToken);
 			var token = linkedCts.Token;
+			if (!_outlookComGate.Wait(0))
+			{
+				_logger.LogWarning("Manual full re-sync skipped because a previous Outlook COM operation is still running. Target calendar was not wiped.");
+				EventRecorder.WriteEntry("Manual full re-sync skipped because Outlook is still busy", EventLogEntryType.Warning);
+				return;
+			}
+			_outlookComGate.Release();
+
 			using var client = CreateHttpClient();
 			var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
 			await WipeICloudCalendarAsync(client, calendarUrl, token, false).ConfigureAwait(false);

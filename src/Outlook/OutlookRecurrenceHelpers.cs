@@ -197,49 +197,101 @@ public partial class CalendarSyncService
 				DateTime from,
 				DateTime to,
 				List<OccurrenceInfo> results,
-				HashSet<DateTime> skipDates)
+				HashSet<DateTime> skipDates,
+				CancellationToken token)
 	{
-		foreach (Outlook.Exception ex in pattern.Exceptions)
+		Outlook.Exceptions? exceptions = null;
+		try
 		{
-			try
-			{
-				skipDates.Add(ex.OriginalDate.Date);
+			exceptions = pattern.Exceptions;
+			var exceptionCount = exceptions.Count;
 
-				var exceptionItem = ex.AppointmentItem;
-				if (exceptionItem != null)
+			for (var exceptionIndex = 1; exceptionIndex <= exceptionCount; exceptionIndex++)
+			{
+				token.ThrowIfCancellationRequested();
+
+				Outlook.Exception? recurrenceException = null;
+				Outlook.AppointmentItem? exceptionItem = null;
+				try
+				{
+					recurrenceException = exceptions[exceptionIndex];
+					skipDates.Add(recurrenceException.OriginalDate.Date);
+
+					if (recurrenceException.Deleted)
+					{
+						_logger.LogDebug("Skipping deleted recurrence occurrence for '{Subject}' at {OriginalDate}.", appt.Subject, recurrenceException.OriginalDate);
+						continue;
+					}
+
+					exceptionItem = recurrenceException.AppointmentItem;
+					if (exceptionItem == null)
+					{
+						continue;
+					}
+
+					token.ThrowIfCancellationRequested();
+
+					var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(exceptionItem.Start, exceptionItem.StartUTC, $"exception '{appt.Subject}' start");
+					var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(exceptionItem.End, exceptionItem.EndUTC, $"exception '{appt.Subject}' end");
+
+					if (exStartLocal >= from && exStartLocal <= to)
+					{
+						var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, exceptionItem.AllDayEvent);
+						var body = ReadOutlookBodyIfEnabled(exceptionItem, $"exception '{appt.Subject}'");
+						results.Add(new OccurrenceInfo(
+								exStartLocal,
+								exEndLocal,
+								exStartUtc,
+								exEndUtc,
+								exAllDay,
+								exceptionItem.Subject,
+								body.Body,
+								exceptionItem.Location,
+								body.WasRead));
+						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
+					}
+				}
+				catch (OperationCanceledException)
+				{
+					throw;
+				}
+				catch (COMException ex)
+				{
+					_logger.LogDebug(ex, "Skipping recurrence exception for '{Subject}' because Outlook reported the instance is unavailable.", appt.Subject);
+				}
+				finally
 				{
 					try
 					{
-						var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(exceptionItem.Start, exceptionItem.StartUTC, $"exception '{appt.Subject}' start");
-						var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(exceptionItem.End, exceptionItem.EndUTC, $"exception '{appt.Subject}' end");
-
-						if (exStartLocal >= from && exStartLocal <= to)
-						{
-							var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, exceptionItem.AllDayEvent);
-							var body = ReadOutlookBodyIfEnabled(exceptionItem, $"exception '{appt.Subject}'");
-							results.Add(new OccurrenceInfo(
-									exStartLocal,
-									exEndLocal,
-									exStartUtc,
-									exEndUtc,
-									exAllDay,
-									exceptionItem.Subject,
-									body.Body,
-									exceptionItem.Location,
-									body.WasRead));
-							_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
-						}
-					}
-					finally
-					{
-						try
+						if (exceptionItem != null && Marshal.IsComObject(exceptionItem))
 						{
 							Marshal.FinalReleaseComObject(exceptionItem);
 						}
-						catch
+					}
+					catch
+					{
+					}
+
+					try
+					{
+						if (recurrenceException != null && Marshal.IsComObject(recurrenceException))
 						{
+							Marshal.FinalReleaseComObject(recurrenceException);
 						}
 					}
+					catch
+					{
+					}
+				}
+			}
+		}
+		finally
+		{
+			try
+			{
+				if (exceptions != null && Marshal.IsComObject(exceptions))
+				{
+					Marshal.FinalReleaseComObject(exceptions);
 				}
 			}
 			catch
@@ -256,12 +308,15 @@ public partial class CalendarSyncService
 			TimeSpan baseDuration,
 			TimeSpan baseLocalDuration,
 			DateTime baseStartLocal,
-			bool seriesAllDay)
+			bool seriesAllDay,
+			CancellationToken token)
 	{
 		try
 		{
 			foreach (var occ in occurrences)
 			{
+				token.ThrowIfCancellationRequested();
+
 				var periodStart = occ.Period.StartTime;
 				if (periodStart == null)
 				{

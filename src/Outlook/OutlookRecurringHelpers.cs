@@ -11,8 +11,11 @@ public partial class CalendarSyncService
 		Dictionary<string, OutlookEventDto> events,
 		HashSet<string> expandedRecurringIds,
 		DateTime syncStart,
-		DateTime syncEnd)
+		DateTime syncEnd,
+		CancellationToken token)
 	{
+		token.ThrowIfCancellationRequested();
+
 		Outlook.AppointmentItem seriesItem = appt;
 		Outlook.AppointmentItem? masterItem = null;
 		var shouldReleaseMaster = false;
@@ -52,12 +55,14 @@ public partial class CalendarSyncService
 		var patternStart = syncStart.AddDays(-_config.RecurrenceExpansionDaysPast);
 		var patternEnd = syncEnd.AddDays(_config.RecurrenceExpansionDaysFuture);
 
-		var occurrences = ExpandRecurrenceManually(seriesItem, patternStart, patternEnd);
+		var occurrences = ExpandRecurrenceManually(seriesItem, patternStart, patternEnd, token);
 		var baseSubject = seriesItem.Subject ?? string.Empty;
 		var baseBody = ReadOutlookBodyIfEnabled(seriesItem, $"recurring '{baseSubject}'");
 		var baseLocation = seriesItem.Location ?? string.Empty;
 		foreach (var occurrence in occurrences)
 		{
+			token.ThrowIfCancellationRequested();
+
 			if (occurrence.StartLocal < syncStart || occurrence.StartLocal > syncEnd)
 			{
 				continue;
@@ -89,10 +94,11 @@ public partial class CalendarSyncService
 		Outlook.AppointmentItem? masterItem = null;
 		var shouldReleaseMaster = false;
 		Outlook.AppointmentItem seriesItem = appt;
+		Outlook.RecurrencePattern? pattern = null;
 
 		try
 		{
-			var pattern = appt.GetRecurrencePattern();
+			pattern = appt.GetRecurrencePattern();
 			if (pattern?.Parent is Outlook.AppointmentItem parent)
 			{
 				masterItem = parent;
@@ -116,6 +122,19 @@ public partial class CalendarSyncService
 		catch (COMException ex)
 		{
 			_logger.LogDebug(ex, "Failed to resolve master item for '{Subject}'.", appt.Subject);
+		}
+		finally
+		{
+			try
+			{
+				if (pattern != null && Marshal.IsComObject(pattern))
+				{
+					Marshal.FinalReleaseComObject(pattern);
+				}
+			}
+			catch
+			{
+			}
 		}
 
 		return (seriesItem, masterItem, shouldReleaseMaster, globalId);
