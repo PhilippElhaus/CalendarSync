@@ -1,5 +1,18 @@
 # Repository agent instructions
 
+## Implementation language
+
+- Prefer Rust over Python for new or substantially reworked long-running,
+  privileged, concurrent, network-facing, performance-sensitive, or
+  system-level components when Rust's ecosystem fits the task. Favor small,
+  typed modules, bounded inputs, explicit error handling, and minimal,
+  documented unsafe code.
+- Keep Python or the established language when it is materially safer or
+  simpler for scripts, orchestration, data work, ecosystem-specific
+  integrations, or small operator glue. Do not rewrite working components
+  solely to change languages; preserve stable CLI, schema, deployment, and
+  rollback contracts.
+
 ## Credential safety
 
 - Never create, change, rotate, reset, revoke, or delete any credential or
