@@ -71,6 +71,7 @@ public partial class CalendarSyncService
 			}
 
 			_logger.LogDebug("Active Outlook COM object was not of the expected type.");
+			ReleaseComObject(activeObject, "unexpected active Outlook object");
 			return null;
 		}
 		catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3) || ex.HResult == unchecked((int)0x80040154))

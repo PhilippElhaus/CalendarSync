@@ -18,8 +18,9 @@ public partial class CalendarSyncService
 		string? BodyOverride,
 		string? LocationOverride,
 		bool BodyWasRead);
+	private sealed record RecurrenceExpansionResult(List<OccurrenceInfo> Occurrences, bool IsComplete);
 
-	private List<OccurrenceInfo> ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to, CancellationToken token)
+	private RecurrenceExpansionResult ExpandRecurrenceManually(Outlook.AppointmentItem appt, DateTime from, DateTime to, CancellationToken token)
 	{
 		var results = new List<OccurrenceInfo>();
 		token.ThrowIfCancellationRequested();
@@ -27,7 +28,7 @@ public partial class CalendarSyncService
 		var pattern = TryGetRecurrencePattern(appt);
 		if (pattern == null)
 		{
-			return results;
+			return new RecurrenceExpansionResult(results, false);
 		}
 
 		try
@@ -39,7 +40,7 @@ public partial class CalendarSyncService
 			var rule = BuildRecurrenceRule(pattern, appt.Subject, seriesAllDay);
 			if (rule == null)
 			{
-				return results;
+				return new RecurrenceExpansionResult(results, false);
 			}
 
 			var baseDuration = baseEndUtc - baseStartUtc;
@@ -77,7 +78,7 @@ public partial class CalendarSyncService
 			};
 
 			var skipDates = new HashSet<DateTime>();
-			ProcessRecurrenceExceptions(pattern, appt, from, to, results, skipDates, token);
+			var exceptionsComplete = ProcessRecurrenceExceptions(pattern, appt, from, to, results, skipDates, token);
 
 			token.ThrowIfCancellationRequested();
 
@@ -89,22 +90,13 @@ public partial class CalendarSyncService
 				.GetOccurrences(fromCal)
 				.TakeWhile(o => o.Period.StartTime == null || o.Period.StartTime.CompareTo(toCal) < 0)
 				.Where(o => o.Period.StartTime != null);
-			AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay, token);
+			var calculatedComplete = AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay, token);
 
-			return results;
+			return new RecurrenceExpansionResult(results, exceptionsComplete && calculatedComplete);
 		}
 		finally
 		{
-			try
-			{
-				if (Marshal.IsComObject(pattern))
-				{
-					Marshal.FinalReleaseComObject(pattern);
-				}
-			}
-			catch
-			{
-			}
+			ReleaseComObject(pattern, "Outlook recurrence pattern");
 		}
 	}
 }

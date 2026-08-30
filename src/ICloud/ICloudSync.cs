@@ -1,7 +1,6 @@
 using Ical.Net;
 using Ical.Net.Serialization;
 using Microsoft.Extensions.Logging;
-using System.Net;
 using System.Text;
 
 namespace CalendarSync;
@@ -10,55 +9,11 @@ public partial class CalendarSyncService
 {
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
-		var calendarUrl = $"{_config.ICloudCalDavUrl}/{_config.PrincipalId}/calendars/{_config.WorkCalendarId}/";
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, true).ConfigureAwait(false);
+		var calendarUrl = BuildCalendarUrl();
+		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, true, token).ConfigureAwait(false);
 
-		_logger.LogInformation("Found {Count} iCloud events before sync.", iCloudEvents.Count);
-
-		var desiredUids = new HashSet<string>(outlookEvents.Keys, StringComparer.OrdinalIgnoreCase);
-		var staleUids = iCloudEvents.Keys.Where(uid => IsManagedUid(uid) && !desiredUids.Contains(uid)).ToList();
-
-		if (staleUids.Count > 0)
-		{
-			_logger.LogInformation("Deleting {Count} stale iCloud events before applying updates.", staleUids.Count);
-			_tray.SetDeleting();
-			var delTotal = staleUids.Count;
-			var delDone = 0;
-
-			foreach (var uid in staleUids)
-			{
-				token.ThrowIfCancellationRequested();
-
-				delDone++;
-				_tray.UpdateText($"Deleting... {delDone}/{delTotal} ({delDone * 100 / delTotal}%)");
-
-				var deleteUrl = $"{calendarUrl}{uid}.ics";
-				using var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, deleteUrl);
-				var deleteResponse = await client.SendAsync(deleteRequest, token).ConfigureAwait(false);
-
-				if (deleteResponse.IsSuccessStatusCode)
-				{
-					_logger.LogInformation("Deleted stale iCloud event UID {Uid}", uid);
-				}
-				else
-				{
-					if (deleteResponse.StatusCode == HttpStatusCode.Unauthorized || deleteResponse.StatusCode == HttpStatusCode.Forbidden)
-					{
-						throw new UnauthorizedAccessException("iCloud authentication failed.");
-					}
-
-					_logger.LogWarning("Failed to delete stale iCloud event UID {Uid}: {Status} - {Reason}", uid, deleteResponse.StatusCode, deleteResponse.ReasonPhrase);
-					await RetryRequestAsync(client, deleteRequest, token).ConfigureAwait(false);
-				}
-			}
-
-			_tray.SetUpdating();
-		}
-		else
-		{
-			_logger.LogInformation("No stale iCloud events detected prior to sync.");
-			_tray.SetUpdating();
-		}
+		_logger.LogInformation("Found {Count} managed iCloud events before sync.", iCloudEvents.Count);
+		_tray.SetUpdating();
 
 		var total = outlookEvents.Count;
 		var done = 0;
@@ -66,12 +21,6 @@ public partial class CalendarSyncService
 		foreach (var (uid, dto) in outlookEvents)
 		{
 			token.ThrowIfCancellationRequested();
-
-			if (dto == null)
-			{
-				continue;
-			}
-
 			done++;
 			if (total > 0)
 			{
@@ -83,10 +32,7 @@ public partial class CalendarSyncService
 			if (!dto.BodyWasRead && iCloudEvents.ContainsKey(uid))
 			{
 				var existingDescription = await GetICloudEventDescriptionAsync(client, eventUrl, token).ConfigureAwait(false);
-				if (existingDescription != null)
-				{
-					dtoForWrite = dto with { Body = existingDescription };
-				}
+				dtoForWrite = dto with { Body = existingDescription };
 			}
 
 			var calEvent = CreateCalendarEvent(dtoForWrite, uid);
@@ -94,30 +40,26 @@ public partial class CalendarSyncService
 			var serializer = new CalendarSerializer();
 			var newIcs = serializer.SerializeToString(calendar) ?? string.Empty;
 
-			using var requestPut = new HttpRequestMessage(HttpMethod.Put, eventUrl)
-			{
-				Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
-			};
-
-			var responsePut = await client.SendAsync(requestPut, token).ConfigureAwait(false);
-			if (responsePut.IsSuccessStatusCode)
-			{
-				_logger.LogInformation("Synced event '{Subject}'", dto.Subject);
-				var verified = await VerifyICloudEventAsync(client, eventUrl, dto, token).ConfigureAwait(false);
-				if (!verified)
+			using (await SendCalDavAsync(
+				client,
+				() => new HttpRequestMessage(HttpMethod.Put, eventUrl)
 				{
-					await AttemptICloudCorrectionAsync(client, eventUrl, newIcs, dto, token).ConfigureAwait(false);
-				}
+					Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
+				},
+				"event upsert",
+				token).ConfigureAwait(false))
+			{
 			}
-			else
-			{
-				if (responsePut.StatusCode == HttpStatusCode.Unauthorized || responsePut.StatusCode == HttpStatusCode.Forbidden)
-				{
-					throw new UnauthorizedAccessException("iCloud authentication failed.");
-				}
 
-				_logger.LogWarning("Failed to sync event '{Subject}' UID {Uid}: {Status} - {Reason}", dto.Subject, uid, responsePut.StatusCode, responsePut.ReasonPhrase);
-				await RetryRequestAsync(client, requestPut, token).ConfigureAwait(false);
+			_logger.LogDebug("Synced iCloud event UID {Uid}.", uid);
+			var verified = await VerifyICloudEventAsync(client, eventUrl, dto, token).ConfigureAwait(false);
+			if (!verified)
+			{
+				var corrected = await AttemptICloudCorrectionAsync(client, eventUrl, newIcs, dto, token).ConfigureAwait(false);
+				if (!corrected)
+				{
+					throw new InvalidDataException($"iCloud event verification failed after correction for UID {uid}.");
+				}
 			}
 		}
 
@@ -125,23 +67,36 @@ public partial class CalendarSyncService
 		{
 			_tray.UpdateText($"Updating... {total}/{total} (100%)");
 		}
-	}
 
-	private async Task RetryRequestAsync(HttpClient client, HttpRequestMessage original, CancellationToken token)
-	{
-		await Task.Delay(5000, token).ConfigureAwait(false);
-		using var request = new HttpRequestMessage(original.Method, original.RequestUri);
+		// Delete only after a complete Outlook snapshot and every desired event was written and verified.
+		var staleUids = CalendarRules.GetStaleManagedUids(_sourceId, iCloudEvents.Keys, outlookEvents.Keys);
 
-		if (original.Content is StringContent sc)
+		if (staleUids.Count == 0)
 		{
-			var body = await sc.ReadAsStringAsync().ConfigureAwait(false);
-			request.Content = new StringContent(body, Encoding.UTF8, sc.Headers.ContentType?.MediaType ?? "text/plain");
+			_logger.LogInformation("No stale iCloud events detected after successful upserts.");
+			return;
 		}
 
-		var retryResponse = await client.SendAsync(request, token).ConfigureAwait(false);
-		if (!retryResponse.IsSuccessStatusCode)
+		_logger.LogInformation("Deleting {Count} stale iCloud events after successful upserts.", staleUids.Count);
+		_tray.SetDeleting();
+		var deleted = 0;
+
+		foreach (var uid in staleUids)
 		{
-			_logger.LogError("Retry failed for {Method} {Url}: {Status} - {Reason}", original.Method, original.RequestUri, retryResponse.StatusCode, retryResponse.ReasonPhrase);
+			token.ThrowIfCancellationRequested();
+			deleted++;
+			_tray.UpdateText($"Deleting... {deleted}/{staleUids.Count} ({deleted * 100 / staleUids.Count}%)");
+			var deleteUrl = $"{calendarUrl}{uid}.ics";
+
+			using (await SendCalDavAsync(
+				client,
+				() => new HttpRequestMessage(HttpMethod.Delete, deleteUrl),
+				"stale event deletion",
+				token).ConfigureAwait(false))
+			{
+			}
+
+			_logger.LogDebug("Deleted stale iCloud event UID {Uid}.", uid);
 		}
 	}
 }

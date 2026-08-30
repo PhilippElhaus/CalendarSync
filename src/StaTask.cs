@@ -37,7 +37,15 @@ public static class StaTask
 		});
 		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
-		thread.Start();
+		try
+		{
+			thread.Start();
+		}
+		catch
+		{
+			registration.Dispose();
+			throw;
+		}
 		return tcs.Task;
 	}
 
@@ -72,7 +80,15 @@ public static class StaTask
 		});
 		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
-		thread.Start();
+		try
+		{
+			thread.Start();
+		}
+		catch
+		{
+			registration.Dispose();
+			throw;
+		}
 		return tcs.Task;
 	}
 }

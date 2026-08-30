@@ -17,8 +17,7 @@ public partial class CalendarSyncService
 
 		try
 		{
-			var outlookProcesses = Process.GetProcessesByName("OUTLOOK");
-			if (outlookProcesses.Length == 0)
+			if (!IsOutlookRunning())
 			{
 				var resolvedPath = ResolveOutlookExecutablePath();
 				var useShellExecute = resolvedPath == null;
@@ -42,7 +41,7 @@ public partial class CalendarSyncService
 
 				try
 				{
-					Process.Start(startInfo);
+					using var startedProcess = Process.Start(startInfo);
 				}
 				catch (Exception ex)
 				{
@@ -51,12 +50,12 @@ public partial class CalendarSyncService
 			}
 
 			var wait = Stopwatch.StartNew();
-			while (Process.GetProcessesByName("OUTLOOK").Length == 0 && wait.Elapsed < TimeSpan.FromSeconds(30))
+			while (!IsOutlookRunning() && wait.Elapsed < TimeSpan.FromSeconds(30))
 			{
 				DelayWithCancellation(TimeSpan.FromSeconds(1), token);
 			}
 
-			if (Process.GetProcessesByName("OUTLOOK").Length == 0)
+			if (!IsOutlookRunning())
 			{
 				_logger.LogWarning("Outlook process could not be detected after attempting to start it. Ensure Outlook is installed and registered correctly.");
 				return;
@@ -124,33 +123,44 @@ public partial class CalendarSyncService
 		token.ThrowIfCancellationRequested();
 	}
 
-	private void CleanupOutlook(Outlook.Application? app, Outlook.NameSpace? ns, Outlook.MAPIFolder? folder, Outlook.Items? items)
+	private static bool IsOutlookRunning()
 	{
+		var processes = Process.GetProcessesByName("OUTLOOK");
 		try
 		{
-			if (items != null)
+			return processes.Length > 0;
+		}
+		finally
+		{
+			foreach (var process in processes)
 			{
-				Marshal.FinalReleaseComObject(items);
-			}
-
-			if (folder != null)
-			{
-				Marshal.FinalReleaseComObject(folder);
-			}
-
-			if (ns != null)
-			{
-				Marshal.FinalReleaseComObject(ns);
-			}
-
-			if (app != null)
-			{
-				Marshal.FinalReleaseComObject(app);
+				process.Dispose();
 			}
 		}
-		catch
+	}
+
+	private void CleanupOutlook(Outlook.Application? app, Outlook.NameSpace? ns, Outlook.MAPIFolder? folder, Outlook.Items? items)
+	{
+		ReleaseComObject(items, "Outlook items");
+		ReleaseComObject(folder, "Outlook calendar folder");
+		ReleaseComObject(ns, "Outlook namespace");
+		ReleaseComObject(app, "Outlook application");
+	}
+
+	private void ReleaseComObject(object? value, string description)
+	{
+		if (value == null || !Marshal.IsComObject(value))
 		{
-			_logger.LogError("Unable to clean up Outlook COM objects.");
+			return;
+		}
+
+		try
+		{
+			Marshal.FinalReleaseComObject(value);
+		}
+		catch (Exception ex)
+		{
+			_logger.LogWarning(ex, "Unable to release {ComObjectDescription} COM object.", description);
 		}
 	}
 }

@@ -14,14 +14,12 @@ public partial class CalendarSyncService
 		var uid = ExtractUidFromUrl(eventUrl);
 		try
 		{
-			var response = await client.GetAsync(eventUrl, token).ConfigureAwait(false);
-			if (!response.IsSuccessStatusCode)
-			{
-				_logger.LogWarning("Verification skipped for UID {Uid}: GET returned {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
-				return false;
-			}
-
-			var ics = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+			using var response = await SendCalDavAsync(
+				client,
+				() => new HttpRequestMessage(HttpMethod.Get, eventUrl),
+				"event verification read",
+				token).ConfigureAwait(false);
+			var ics = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
 			var calendar = Calendar.Load(ics);
 			var calEvent = calendar?.Events?.FirstOrDefault();
 			if (calEvent == null)
@@ -50,10 +48,14 @@ public partial class CalendarSyncService
 				return false;
 			}
 
-			_logger.LogInformation("Verification confirmed UID {Uid} matches source timings", uid);
+			_logger.LogDebug("Verification confirmed UID {Uid} matches source timings", uid);
 			return true;
 		}
 		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (UnauthorizedAccessException)
 		{
 			throw;
 		}
@@ -65,27 +67,21 @@ public partial class CalendarSyncService
 		}
 	}
 
-	private async Task AttemptICloudCorrectionAsync(HttpClient client, string eventUrl, string newIcs, OutlookEventDto dto, CancellationToken token)
+	private async Task<bool> AttemptICloudCorrectionAsync(HttpClient client, string eventUrl, string newIcs, OutlookEventDto dto, CancellationToken token)
 	{
 		var uid = ExtractUidFromUrl(eventUrl);
 		try
 		{
 			_logger.LogWarning("Attempting to correct iCloud event UID {Uid} after verification mismatch", uid);
-			using var request = new HttpRequestMessage(HttpMethod.Put, eventUrl)
-			{
-				Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
-			};
-			var response = await client.SendAsync(request, token).ConfigureAwait(false);
-			if (!response.IsSuccessStatusCode)
-			{
-				if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
+			using (await SendCalDavAsync(
+				client,
+				() => new HttpRequestMessage(HttpMethod.Put, eventUrl)
 				{
-					throw new UnauthorizedAccessException("iCloud authentication failed.");
-				}
-
-				_logger.LogError("Correction PUT failed for UID {Uid}: {Status} - {Reason}", uid, response.StatusCode, response.ReasonPhrase);
-				EventRecorder.WriteEntry($"iCloud correction failed UID {uid}", EventLogEntryType.Error);
-				return;
+					Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
+				},
+				"event correction",
+				token).ConfigureAwait(false))
+			{
 			}
 
 			var verified = await VerifyICloudEventAsync(client, eventUrl, dto, token).ConfigureAwait(false);
@@ -98,8 +94,14 @@ public partial class CalendarSyncService
 				_logger.LogError("Verification still failing after correction for UID {Uid}", uid);
 				EventRecorder.WriteEntry($"iCloud verification still mismatched UID {uid}", EventLogEntryType.Error);
 			}
+
+			return verified;
 		}
 		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (UnauthorizedAccessException)
 		{
 			throw;
 		}
@@ -107,6 +109,7 @@ public partial class CalendarSyncService
 		{
 			_logger.LogError(ex, "Failed to correct iCloud event UID {Uid}", uid);
 			EventRecorder.WriteEntry($"iCloud correction exception UID {uid}", EventLogEntryType.Error);
+			return false;
 		}
 	}
 

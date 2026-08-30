@@ -33,12 +33,13 @@ As a COM-Interop application it is optimized to run silently via a Scheduled Tas
 ### 1. Build & Deploy
 
 - Compile the app (`Release` mode).
-- Copy the output (`.exe` + `config.json`) to a permanent path, e.g.:
+- Copy the output to a permanent path, e.g.:
 
 ```
 C:\CalendarSync\
 ```
 
+- Copy `config.example.json` to `config.json` in the permanent path.
 - Fill in `config.json` with your iCloud credentials and calendar info:
 
 ```json
@@ -64,6 +65,11 @@ C:\CalendarSync\
 Use a browser Dev Tools or CalDAV client to retrieve `PrincipalId` and `WorkCalendarId`.
 
 `SourceTimeZoneId` and `TargetTimeZoneId` are optional. When omitted, the service falls back to the host operating system's local timezone for both the Outlook source and the iCloud destination.
+
+CalendarSync validates configuration before it starts. The CalDAV URL must use
+HTTPS. Calendar identifiers must be present. Intervals and sync windows must be
+within safe bounds. CalendarSync creates a stable `SourceId` when it is empty
+and replaces the configuration file atomically.
 
 ### 2. Register as a Scheduled Task
 
@@ -97,6 +103,22 @@ High level events are also written to the Windows Event Log under the
 ## Outlook COM Reliability
 
 - Uses a dedicated STA thread with timeouts to prevent Outlook UI hangs.
+- Never starts a second Outlook COM operation while a timed-out operation is still exiting.
+- Skips all iCloud changes when Outlook cannot produce a complete snapshot.
+- Use [docs/com-endurance.md](docs/com-endurance.md) after any COM-related change.
+
+## Validation
+
+Run the locked restore, characterization tests, x86 Release build, dependency
+layout check, and package self-test with:
+
+```powershell
+.\scripts\Validate.ps1
+```
+
+The validation workflow writes package staging files below the Windows
+temporary directory. It does not read the deployed `config.json` or connect to
+Outlook or iCloud.
 
 ## Notes
 

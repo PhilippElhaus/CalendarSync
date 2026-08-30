@@ -6,7 +6,7 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private void ProcessRecurringAppointment(
+	private bool ProcessRecurringAppointment(
 		Outlook.AppointmentItem appt,
 		Dictionary<string, OutlookEventDto> events,
 		HashSet<string> expandedRecurringIds,
@@ -46,47 +46,52 @@ public partial class CalendarSyncService
 			globalId = Guid.NewGuid().ToString();
 		}
 
-		if (!expandedRecurringIds.Add(globalId))
+		try
+		{
+			if (!expandedRecurringIds.Add(globalId))
+			{
+				return true;
+			}
+
+			var patternStart = syncStart.AddDays(-_config.RecurrenceExpansionDaysPast);
+			var patternEnd = syncEnd.AddDays(_config.RecurrenceExpansionDaysFuture);
+			var expansion = ExpandRecurrenceManually(seriesItem, patternStart, patternEnd, token);
+			var baseSubject = seriesItem.Subject ?? string.Empty;
+			var baseBody = ReadOutlookBodyIfEnabled(seriesItem, $"recurring '{baseSubject}'");
+			var baseLocation = seriesItem.Location ?? string.Empty;
+
+			foreach (var occurrence in expansion.Occurrences)
+			{
+				token.ThrowIfCancellationRequested();
+
+				if (occurrence.StartLocal < syncStart || occurrence.StartLocal > syncEnd)
+				{
+					continue;
+				}
+
+				var body = occurrence.BodyOverride ?? baseBody.Body;
+				var bodyWasRead = occurrence.BodyOverride != null ? occurrence.BodyWasRead : baseBody.WasRead;
+				var dto = new OutlookEventDto(
+					occurrence.SubjectOverride ?? baseSubject,
+					body,
+					occurrence.LocationOverride ?? baseLocation,
+					occurrence.StartLocal,
+					occurrence.EndLocal,
+					occurrence.StartUtc,
+					occurrence.EndUtc,
+					globalId,
+					occurrence.IsAllDay,
+					bodyWasRead);
+				dto = EnsureEventConsistency(dto, $"recurring '{dto.Subject}'");
+				AddEventChunks(events, globalId, dto);
+			}
+
+			return expansion.IsComplete;
+		}
+		finally
 		{
 			ReleaseIfNeeded(masterItem, shouldReleaseMaster);
-			return;
 		}
-
-		var patternStart = syncStart.AddDays(-_config.RecurrenceExpansionDaysPast);
-		var patternEnd = syncEnd.AddDays(_config.RecurrenceExpansionDaysFuture);
-
-		var occurrences = ExpandRecurrenceManually(seriesItem, patternStart, patternEnd, token);
-		var baseSubject = seriesItem.Subject ?? string.Empty;
-		var baseBody = ReadOutlookBodyIfEnabled(seriesItem, $"recurring '{baseSubject}'");
-		var baseLocation = seriesItem.Location ?? string.Empty;
-		foreach (var occurrence in occurrences)
-		{
-			token.ThrowIfCancellationRequested();
-
-			if (occurrence.StartLocal < syncStart || occurrence.StartLocal > syncEnd)
-			{
-				continue;
-			}
-			var body = occurrence.BodyOverride ?? baseBody.Body;
-			var bodyWasRead = occurrence.BodyOverride != null ? occurrence.BodyWasRead : baseBody.WasRead;
-			var dto = new OutlookEventDto(
-				occurrence.SubjectOverride ?? baseSubject,
-				body,
-				occurrence.LocationOverride ?? baseLocation,
-				occurrence.StartLocal,
-				occurrence.EndLocal,
-				occurrence.StartUtc,
-				occurrence.EndUtc,
-				globalId,
-				occurrence.IsAllDay,
-				bodyWasRead
-			);
-			dto = EnsureEventConsistency(dto, $"recurring '{dto.Subject}'");
-			var sanitizedDto = dto with { StartLocal = dto.StartLocal, EndLocal = dto.EndLocal };
-			AddEventChunks(events, globalId, sanitizedDto);
-		}
-
-		ReleaseIfNeeded(masterItem, shouldReleaseMaster);
 	}
 
 	private (Outlook.AppointmentItem seriesItem, Outlook.AppointmentItem? masterItem, bool shouldRelease, string globalId) ResolveMasterAppointment(Outlook.AppointmentItem appt, string globalId)
@@ -125,16 +130,7 @@ public partial class CalendarSyncService
 		}
 		finally
 		{
-			try
-			{
-				if (pattern != null && Marshal.IsComObject(pattern))
-				{
-					Marshal.FinalReleaseComObject(pattern);
-				}
-			}
-			catch
-			{
-			}
+			ReleaseComObject(pattern, "recurrence pattern used to resolve the master");
 		}
 
 		return (seriesItem, masterItem, shouldReleaseMaster, globalId);
@@ -144,13 +140,7 @@ public partial class CalendarSyncService
 	{
 		if (shouldReleaseMaster && masterItem != null)
 		{
-			try
-			{
-				Marshal.FinalReleaseComObject(masterItem);
-			}
-			catch
-			{
-			}
+			ReleaseComObject(masterItem, "recurrence master appointment");
 		}
 	}
 }

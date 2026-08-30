@@ -36,6 +36,12 @@ public class Program
 		try
 		{
 			BootstrapDiagnostics.Log("Main entry reached.");
+			if (args.Any(arg => arg.Equals("--self-test", StringComparison.OrdinalIgnoreCase)))
+			{
+				Environment.ExitCode = RunPackageSelfTest();
+				return;
+			}
+
 			EventRecorder.Initialize();
 			using var singleInstanceMutex = new System.Threading.Mutex(true, "CalendarSync", out var createdNewInstance);
 			if (!createdNewInstance)
@@ -53,14 +59,29 @@ public class Program
 			tray.ExitClicked += async (_, _) =>
 			{
 				EventRecorder.WriteEntry("Shutdown requested", EventLogEntryType.Information);
-				await host.StopAsync().ConfigureAwait(false);
+				await host.StopAsync();
 				tray.Dispose();
 				Application.Exit();
 			};
 
+			var fullResyncRunning = 0;
 			tray.FullResyncClicked += async (_, _) =>
 			{
-				await service.TriggerFullResyncAsync().ConfigureAwait(false);
+				if (Interlocked.Exchange(ref fullResyncRunning, 1) != 0)
+				{
+					return;
+				}
+
+				tray.SetFullResyncEnabled(false);
+				try
+				{
+					await service.TriggerFullResyncAsync();
+				}
+				finally
+				{
+					tray.SetFullResyncEnabled(true);
+					Interlocked.Exchange(ref fullResyncRunning, 0);
+				}
 			};
 
 			host.StartAsync().GetAwaiter().GetResult();
@@ -99,22 +120,16 @@ public class Program
 							EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
 							throw new FileNotFoundException("config.json not found in the executable directory.");
 						}
-						var configJson = File.ReadAllText(configPath);
-						var config = JsonConvert.DeserializeObject<SyncConfig>(configJson);
-						if (string.IsNullOrWhiteSpace(config?.SourceId))
-						{
-							config!.SourceId = Guid.NewGuid().ToString("N");
-							File.WriteAllText(configPath, JsonConvert.SerializeObject(config, Formatting.Indented));
-						}
+						var config = SyncConfigLoader.Load(configPath);
 
-						services.AddSingleton<SyncConfig>(config!);
+						services.AddSingleton(config);
 						services.AddSingleton<TrayIconManager>();
 						services.AddSingleton<CalendarSyncService>();
 						services.AddSingleton<IHostedService>(sp =>
 							sp.GetRequiredService<CalendarSyncService>());
 
 						LogEventLevel serilogLevel = LogEventLevel.Information;
-						if (!string.IsNullOrWhiteSpace(config!.LogLevel) &&
+						if (!string.IsNullOrWhiteSpace(config.LogLevel) &&
 								Enum.TryParse(config.LogLevel, true, out LogEventLevel parsedLevel))
 						{
 							serilogLevel = parsedLevel;
@@ -131,6 +146,32 @@ public class Program
 						BootstrapDiagnostics.Log("Services configured successfully.");
 						EventRecorder.WriteEntry("Configuration loaded", EventLogEntryType.Information);
 					});
+
+	private static int RunPackageSelfTest()
+	{
+		try
+		{
+			_ = typeof(Ical.Net.Calendar).Assembly.FullName;
+			_ = typeof(JsonConvert).Assembly.FullName;
+			_ = typeof(Serilog.Log).Assembly.FullName;
+
+			var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+			var requiredIcons = new[] { "cal64.ico", "icon_idle.ico", "icon_update.ico", "icon_delete.ico" };
+			foreach (var iconName in requiredIcons)
+			{
+				var iconPath = Path.Combine(baseDirectory, "ico", iconName);
+				using var icon = new Icon(iconPath);
+			}
+
+			BootstrapDiagnostics.Log("Package self-test passed.");
+			return 0;
+		}
+		catch (Exception ex)
+		{
+			BootstrapDiagnostics.Log($"Package self-test failed: {ex.GetType().FullName}, HResult=0x{ex.HResult:X8}.");
+			return 1;
+		}
+	}
 
 	private static void SubscribeToGlobalExceptions()
 	{
@@ -152,8 +193,8 @@ public class Program
 			Log.Fatal(ex, "Unhandled exception");
 		}
 		catch { }
-		BootstrapDiagnostics.Log($"Unhandled exception captured: {ex}");
-		EventRecorder.WriteEntry(ex.ToString(), EventLogEntryType.Error);
+		BootstrapDiagnostics.Log($"Unhandled exception captured: type={ex.GetType().FullName}, HResult=0x{ex.HResult:X8}.");
+		EventRecorder.WriteEntry($"Unhandled exception: {ex.GetType().FullName}, HResult=0x{ex.HResult:X8}", EventLogEntryType.Error);
 	}
 
 	private static Assembly? ResolveFromBin(object? _, ResolveEventArgs args)

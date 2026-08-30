@@ -34,7 +34,7 @@ internal static class BootstrapDiagnostics
 		{
 			var count = Interlocked.Increment(ref _firstChanceCount);
 			if (count <= MaxFirstChanceEntries)
-				Log($"First-chance exception: {e.Exception}");
+				Log($"First-chance exception: type={e.Exception.GetType().FullName}, HResult=0x{e.Exception.HResult:X8}.");
 		};
 		AppDomain.CurrentDomain.AssemblyLoad += (_, e) =>
 		{

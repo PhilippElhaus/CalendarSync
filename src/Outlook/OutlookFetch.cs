@@ -1,174 +1,220 @@
-using Microsoft.Extensions.Logging;
+using System.Collections;
 using System.Runtime.InteropServices;
+using Microsoft.Extensions.Logging;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private Task<Dictionary<string, OutlookEventDto>> FetchOutlookEventsAsync(CancellationToken token)
+	private const int MaxOutlookItemsPerSnapshot = 5000;
+
+	private Task<OutlookSnapshot> FetchOutlookEventsAsync(CancellationToken token)
 	{
 		var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
 		cts.CancelAfter(TimeSpan.FromMinutes(2));
 
 		if (!_outlookComGate.Wait(0))
 		{
+			cts.Dispose();
 			_logger.LogWarning("Previous Outlook COM operation has not exited yet; skipping this sync cycle to avoid overlapping Outlook automation.");
 			throw new OutlookOperationInProgressException();
 		}
 
-		return StaTask.Run(() =>
+		try
 		{
-			Outlook.Application? outlookApp = null;
-			Outlook.NameSpace? outlookNs = null;
-			Outlook.MAPIFolder? calendar = null;
-			Outlook.Items? items = null;
-			var allItems = new List<Outlook.AppointmentItem>();
+			return StaTask.Run(() => FetchOutlookEventsOnStaThread(cts), cts.Token);
+		}
+		catch
+		{
+			_outlookComGate.Release();
+			cts.Dispose();
+			throw;
+		}
+	}
+
+	private OutlookSnapshot FetchOutlookEventsOnStaThread(CancellationTokenSource cts)
+	{
+		Outlook.Application? outlookApp = null;
+		Outlook.NameSpace? outlookNs = null;
+		Outlook.MAPIFolder? calendar = null;
+		Outlook.Items? rawItems = null;
+		Outlook.Items? restrictedItems = null;
+		IEnumerator? enumerator = null;
+		var allItems = new List<Outlook.AppointmentItem>();
+		var scanFailures = 0;
+		var hitItemLimit = false;
+
+		try
+		{
+			var retryCount = 0;
+			const int maxRetries = 5;
+
+			while (retryCount < maxRetries && !cts.Token.IsCancellationRequested)
+			{
+				try
+				{
+					cts.Token.ThrowIfCancellationRequested();
+					_logger.LogDebug("Attempting to create Outlook.Application instance.");
+					outlookApp = CreateOutlookApplication(cts.Token);
+					_logger.LogDebug("Getting Outlook namespace.");
+					outlookNs = outlookApp.GetNamespace("MAPI");
+					_logger.LogDebug("Accessing calendar folder.");
+					calendar = outlookNs.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
+					_logger.LogDebug("Retrieving calendar items.");
+					rawItems = calendar.Items;
+					_logger.LogInformation("Successfully connected to Outlook.");
+					break;
+				}
+				catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
+				{
+					retryCount++;
+					_logger.LogWarning(ex, "Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {Retry}/{MaxRetries}.", retryCount, maxRetries);
+					CleanupOutlook(outlookApp, outlookNs, calendar, rawItems);
+					outlookApp = null;
+					outlookNs = null;
+					calendar = null;
+					rawItems = null;
+
+					if (retryCount == maxRetries)
+					{
+						throw;
+					}
+
+					EnsureOutlookProcessReady(cts.Token);
+					_logger.LogDebug("Waiting 10 seconds before retry.");
+					DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
+				}
+				catch (OperationCanceledException)
+				{
+					throw;
+				}
+				catch (Exception ex)
+				{
+					retryCount++;
+					_logger.LogWarning(ex, "Unexpected error connecting to Outlook, retry {Retry}/{MaxRetries}.", retryCount, maxRetries);
+					CleanupOutlook(outlookApp, outlookNs, calendar, rawItems);
+					outlookApp = null;
+					outlookNs = null;
+					calendar = null;
+					rawItems = null;
+
+					if (retryCount == maxRetries)
+					{
+						throw;
+					}
+
+					EnsureOutlookProcessReady(cts.Token);
+					_logger.LogDebug("Waiting 10 seconds before retry.");
+					DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
+				}
+			}
+
+			if (rawItems == null)
+			{
+				_logger.LogWarning("Outlook connection did not yield a calendar item collection.");
+				return OutlookSnapshot.Incomplete();
+			}
+
+			rawItems.IncludeRecurrences = true;
+			rawItems.Sort("[Start]");
+
+			var start = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
+			var end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
+			var filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
+			restrictedItems = rawItems.Restrict(filter);
+
+			_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
 
 			try
 			{
-				var retryCount = 0;
-				const int maxRetries = 5;
-
-				while (retryCount < maxRetries && !cts.Token.IsCancellationRequested)
-				{
-					try
-					{
-						cts.Token.ThrowIfCancellationRequested();
-						_logger.LogDebug("Attempting to create Outlook.Application instance.");
-						outlookApp = CreateOutlookApplication(cts.Token);
-						_logger.LogDebug("Getting Outlook namespace.");
-						outlookNs = outlookApp.GetNamespace("MAPI");
-						_logger.LogDebug("Accessing calendar folder.");
-						calendar = outlookNs.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
-						_logger.LogDebug("Retrieving calendar items.");
-						items = calendar.Items;
-						_logger.LogInformation("Successfully connected to Outlook.");
-						break;
-					}
-					catch (COMException ex) when (ex.HResult == unchecked((int)0x80080005))
-					{
-						retryCount++;
-						_logger.LogWarning(ex, $"Failed to connect to Outlook (CO_E_SERVER_EXEC_FAILURE), retry {retryCount}/{maxRetries}.");
-						CleanupOutlook(outlookApp, outlookNs, calendar, items);
-						outlookApp = null;
-						outlookNs = null;
-						calendar = null;
-						items = null;
-
-						if (retryCount == maxRetries)
-						{
-							throw;
-						}
-
-						EnsureOutlookProcessReady(cts.Token);
-						_logger.LogDebug("Waiting 10 seconds before retry.");
-						DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
-					}
-					catch (OperationCanceledException)
-					{
-						CleanupOutlook(outlookApp, outlookNs, calendar, items);
-						throw;
-					}
-					catch (Exception ex)
-					{
-						retryCount++;
-						_logger.LogWarning(ex, "Unexpected error connecting to Outlook, retry {Retry}/{MaxRetries}.", retryCount, maxRetries);
-						CleanupOutlook(outlookApp, outlookNs, calendar, items);
-						outlookApp = null;
-						outlookNs = null;
-						calendar = null;
-						items = null;
-
-						if (retryCount == maxRetries)
-						{
-							throw;
-						}
-
-						EnsureOutlookProcessReady(cts.Token);
-						_logger.LogDebug("Waiting 10 seconds before retry.");
-						DelayWithCancellation(TimeSpan.FromSeconds(10), cts.Token);
-					}
-				}
-
-				if (items == null)
-				{
-					_logger.LogDebug("No connection established, exiting FetchOutlookEventsAsync.");
-					return new Dictionary<string, OutlookEventDto>();
-				}
-
-				items.IncludeRecurrences = true;
-				items.Sort("[Start]");
-
-				var start = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
-				var end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
-
-				var filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
-				items = items.Restrict(filter);
-
-				_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
-
+				enumerator = restrictedItems.GetEnumerator();
 				var count = 0;
-
-				foreach (var item in items)
+				while (enumerator.MoveNext())
 				{
 					cts.Token.ThrowIfCancellationRequested();
 
-					if (count++ > 5000)
+					if (count >= MaxOutlookItemsPerSnapshot)
 					{
-						_logger.LogWarning("Aborting calendar item scan after 5000 items to prevent hangs.");
+						hitItemLimit = true;
+						_logger.LogWarning("Aborting calendar item scan after {Limit} items to prevent hangs. Snapshot is incomplete.", MaxOutlookItemsPerSnapshot);
 						break;
 					}
 
+					count++;
+					object? item = null;
+					var retainedAppointment = false;
 					try
 					{
-						if (item is Outlook.AppointmentItem appt)
+						item = enumerator.Current;
+						if (item is Outlook.AppointmentItem appointment)
 						{
-							allItems.Add(appt);
-						}
-						else if (item != null && Marshal.IsComObject(item))
-						{
-							Marshal.FinalReleaseComObject(item);
+							allItems.Add(appointment);
+							retainedAppointment = true;
 						}
 					}
 					catch (Exception ex)
 					{
-						_logger.LogDebug(ex, "Skipping calendar item due to exception.");
+						scanFailures++;
+						_logger.LogWarning(ex, "Failed to collect one Outlook calendar item. Snapshot is incomplete.");
+					}
+					finally
+					{
+						if (!retainedAppointment)
+						{
+							ReleaseComObject(item, "calendar item");
+						}
 					}
 				}
-
-				_logger.LogInformation("Collected {Count} Outlook items after manual date filter.", allItems.Count);
-
-				var outlookEvents = GetOutlookEventsFromList(allItems, cts.Token);
-
-				_logger.LogInformation("Expanded to {Count} atomic Outlook events.", outlookEvents.Count);
-
-				return outlookEvents;
 			}
-			finally
+			catch (OperationCanceledException)
 			{
-				_logger.LogDebug("Cleaning up Outlook COM objects.");
-				ReleaseOutlookAppointmentItems(allItems);
-				CleanupOutlook(outlookApp, outlookNs, calendar, items);
-				_outlookComGate.Release();
+				throw;
 			}
-		}, cts.Token);
+			catch (Exception ex)
+			{
+				scanFailures++;
+				_logger.LogWarning(ex, "Outlook item enumeration ended unexpectedly. Snapshot is incomplete.");
+			}
+
+			_logger.LogInformation("Collected {Count} Outlook items after the date filter.", allItems.Count);
+			var snapshot = GetOutlookEventsFromList(allItems, cts.Token);
+			var totalFailures = snapshot.FailedItemCount + scanFailures;
+			var complete = snapshot.IsComplete && totalFailures == 0 && !hitItemLimit;
+
+			_logger.LogInformation(
+				"Expanded to {Count} atomic Outlook events. Complete={Complete}, FailedItems={FailedItems}.",
+				snapshot.Events.Count,
+				complete,
+				totalFailures);
+
+			return snapshot with
+			{
+				IsComplete = complete,
+				FailedItemCount = totalFailures,
+				HitItemLimit = hitItemLimit
+			};
+		}
+		finally
+		{
+			_logger.LogDebug("Cleaning up Outlook COM objects.");
+			ReleaseComObject(enumerator, "Outlook item enumerator");
+			ReleaseOutlookAppointmentItems(allItems);
+			if (!ReferenceEquals(restrictedItems, rawItems))
+			{
+				ReleaseComObject(restrictedItems, "restricted Outlook items");
+			}
+			CleanupOutlook(outlookApp, outlookNs, calendar, rawItems);
+			_outlookComGate.Release();
+			cts.Dispose();
+		}
 	}
 
 	private void ReleaseOutlookAppointmentItems(IEnumerable<Outlook.AppointmentItem> appointments)
 	{
 		foreach (var appointment in appointments)
 		{
-			try
-			{
-				if (Marshal.IsComObject(appointment))
-				{
-					Marshal.FinalReleaseComObject(appointment);
-				}
-			}
-			catch
-			{
-			}
+			ReleaseComObject(appointment, "Outlook appointment");
 		}
 	}
 

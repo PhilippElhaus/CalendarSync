@@ -81,62 +81,18 @@ public partial class CalendarSyncService
 
 	private bool DetermineAllDay(DateTime startLocal, DateTime endLocal, bool flaggedAllDay)
 	{
-		var span = endLocal - startLocal;
-		if (span <= TimeSpan.Zero)
-		{
-			return flaggedAllDay;
-		}
-
-		if (flaggedAllDay)
-		{
-			return true;
-		}
-
-		var startMinutes = Math.Abs(startLocal.TimeOfDay.TotalMinutes);
-		var endTime = endLocal.TimeOfDay;
-		var endMinutes = Math.Abs(endTime.TotalMinutes);
-		var minutesToMidnight = Math.Abs((TimeSpan.FromDays(1) - endTime).TotalMinutes);
-
-		if (span.TotalHours >= 23 &&
-			startMinutes <= AllDayToleranceMinutes &&
-			(endTime == TimeSpan.Zero || endMinutes <= AllDayToleranceMinutes || minutesToMidnight <= AllDayToleranceMinutes))
-		{
-			return true;
-		}
-
-		return false;
+		return CalendarRules.DetermineAllDay(startLocal, endLocal, flaggedAllDay);
 	}
 
 	private (DateTime startDate, DateTime endDate) GetAllDayDateRange(DateTime startLocal, DateTime endLocal)
 	{
-		var startDate = startLocal.Date;
-		var endLocalTime = endLocal.TimeOfDay;
-		DateTime exclusiveEnd;
-		if (endLocalTime <= TimeSpan.FromMinutes(AllDayToleranceMinutes))
-		{
-			exclusiveEnd = endLocal.Date;
-		}
-		else if (Math.Abs((TimeSpan.FromDays(1) - endLocalTime).TotalMinutes) <= AllDayToleranceMinutes)
-		{
-			exclusiveEnd = endLocal.Date.AddDays(1);
-		}
-		else
-		{
-			exclusiveEnd = endLocal.Date.AddDays(1);
-		}
-
-		if (exclusiveEnd <= startDate)
-		{
-			exclusiveEnd = startDate.AddDays(1);
-		}
-
-		return (startDate, exclusiveEnd);
+		return CalendarRules.GetAllDayDateRange(startLocal, endLocal);
 	}
 
 	private DateTime ConvertFromSourceLocalToUtc(DateTime local, string? context = null)
 	{
 		var unspecifiedLocal = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
-		var utc = TimeZoneInfo.ConvertTimeToUtc(unspecifiedLocal, _sourceTimeZone);
+		var utc = CalendarRules.ConvertSourceLocalToUtc(unspecifiedLocal, _sourceTimeZone);
 		if (!string.IsNullOrEmpty(context))
 		{
 			CheckTargetAlignment(context, unspecifiedLocal, utc);
@@ -147,8 +103,7 @@ public partial class CalendarSyncService
 	private DateTime ConvertUtcToSourceLocal(DateTime utc, string? context = null)
 	{
 		var specifiedUtc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
-		var local = TimeZoneInfo.ConvertTimeFromUtc(specifiedUtc, _sourceTimeZone);
-		var unspecifiedLocal = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+		var unspecifiedLocal = CalendarRules.ConvertUtcToSourceLocal(specifiedUtc, _sourceTimeZone);
 		if (!string.IsNullOrEmpty(context))
 		{
 			CheckTargetAlignment(context, unspecifiedLocal, specifiedUtc);

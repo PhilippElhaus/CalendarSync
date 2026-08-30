@@ -1,17 +1,15 @@
 using Microsoft.Extensions.Logging;
-using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private Dictionary<string, OutlookEventDto> GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts, CancellationToken token)
+	private OutlookSnapshot GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts, CancellationToken token)
 	{
 		var events = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
 		var expandedRecurringIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var failedItemCount = 0;
 
 		var sourceToday = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sourceTimeZone).Date;
 		var syncStart = sourceToday.AddDays(-_config.SyncDaysIntoPast);
@@ -30,7 +28,10 @@ public partial class CalendarSyncService
 
 				if (appt.IsRecurring)
 				{
-					ProcessRecurringAppointment(appt, events, expandedRecurringIds, syncStart, syncEnd, token);
+					if (!ProcessRecurringAppointment(appt, events, expandedRecurringIds, syncStart, syncEnd, token))
+					{
+						failedItemCount++;
+					}
 					continue;
 				}
 
@@ -65,11 +66,13 @@ public partial class CalendarSyncService
 			}
 			catch (Exception ex)
 			{
-				_logger.LogWarning(ex, "Failed to process Outlook event '{Subject}'.", appt.Subject);
+				failedItemCount++;
+				_logger.LogWarning(ex, "Failed to process one Outlook event. Snapshot is incomplete.");
 			}
 		}
 
-		return DeduplicateEvents(events);
+		var deduplicated = DeduplicateEvents(events);
+		return new OutlookSnapshot(deduplicated, failedItemCount == 0, failedItemCount, false);
 	}
 
 	private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
@@ -88,12 +91,8 @@ public partial class CalendarSyncService
 
 	private string BuildManagedUid(string baseUid, OutlookEventDto dto)
 	{
-		var prefix = string.IsNullOrWhiteSpace(_sourceId) ? "outlook" : $"{_sourceId}-outlook";
-		var baseKey = string.IsNullOrWhiteSpace(baseUid) ? Guid.Empty.ToString("N") : baseUid;
-		var baseHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(baseKey))).ToLowerInvariant();
 		var startUtc = dto.StartUtc != DateTime.MinValue ? dto.StartUtc : ConvertFromSourceLocalToUtc(dto.StartLocal, "uid build fallback");
-		var occurrenceMarker = startUtc.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
-		return $"{prefix}-{baseHash}-{occurrenceMarker}";
+		return CalendarRules.BuildManagedUid(_sourceId, baseUid, startUtc);
 	}
 
 	private Dictionary<string, OutlookEventDto> DeduplicateEvents(Dictionary<string, OutlookEventDto> events)

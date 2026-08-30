@@ -191,7 +191,7 @@ public partial class CalendarSyncService
 		}
 	}
 
-	private void ProcessRecurrenceExceptions(
+	private bool ProcessRecurrenceExceptions(
 				Outlook.RecurrencePattern pattern,
 				Outlook.AppointmentItem appt,
 				DateTime from,
@@ -201,6 +201,7 @@ public partial class CalendarSyncService
 				CancellationToken token)
 	{
 		Outlook.Exceptions? exceptions = null;
+		var isComplete = true;
 		try
 		{
 			exceptions = pattern.Exceptions;
@@ -226,6 +227,7 @@ public partial class CalendarSyncService
 					exceptionItem = recurrenceException.AppointmentItem;
 					if (exceptionItem == null)
 					{
+						isComplete = false;
 						continue;
 					}
 
@@ -248,7 +250,7 @@ public partial class CalendarSyncService
 								body.Body,
 								exceptionItem.Location,
 								body.WasRead));
-						_logger.LogInformation("Processed modified occurrence for '{Subject}' at {Start}", appt.Subject, exStartLocal);
+						_logger.LogDebug("Processed one modified recurrence occurrence at {Start}.", exStartLocal);
 					}
 				}
 				catch (OperationCanceledException)
@@ -257,50 +259,25 @@ public partial class CalendarSyncService
 				}
 				catch (COMException ex)
 				{
+					isComplete = false;
 					_logger.LogDebug(ex, "Skipping recurrence exception for '{Subject}' because Outlook reported the instance is unavailable.", appt.Subject);
 				}
 				finally
 				{
-					try
-					{
-						if (exceptionItem != null && Marshal.IsComObject(exceptionItem))
-						{
-							Marshal.FinalReleaseComObject(exceptionItem);
-						}
-					}
-					catch
-					{
-					}
-
-					try
-					{
-						if (recurrenceException != null && Marshal.IsComObject(recurrenceException))
-						{
-							Marshal.FinalReleaseComObject(recurrenceException);
-						}
-					}
-					catch
-					{
-					}
+					ReleaseComObject(exceptionItem, "recurrence exception appointment");
+					ReleaseComObject(recurrenceException, "recurrence exception");
 				}
 			}
 		}
 		finally
 		{
-			try
-			{
-				if (exceptions != null && Marshal.IsComObject(exceptions))
-				{
-					Marshal.FinalReleaseComObject(exceptions);
-				}
-			}
-			catch
-			{
-			}
+			ReleaseComObject(exceptions, "recurrence exceptions collection");
 		}
+
+		return isComplete;
 	}
 
-	private void AddCalculatedOccurrences(
+	private bool AddCalculatedOccurrences(
 			List<OccurrenceInfo> results,
 			Outlook.AppointmentItem appt,
 			IEnumerable<Occurrence> occurrences,
@@ -397,10 +374,13 @@ public partial class CalendarSyncService
 				var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
 				results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null, false));
 			}
+
+			return true;
 		}
 		catch (EvaluationOutOfRangeException ex)
 		{
 			_logger.LogWarning(ex, "Stopped recurrence expansion for '{Subject}' after Ical.Net reached its evaluation range.", appt.Subject);
+			return false;
 		}
 	}
 }
