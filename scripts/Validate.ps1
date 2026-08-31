@@ -38,7 +38,7 @@ try {
 		throw 'Full Visual Studio MSBuild is required for the Outlook COM reference.'
 	}
 
-	& $msbuild (Join-Path $repo 'CalendarSync.Tests\CalendarSync.Tests.csproj') `
+	& $msbuild (Join-Path $repo 'tests\CalendarSync.Tests.csproj') `
 		/t:Build `
 		/p:Configuration=Release `
 		/p:RestoreLockedMode=true `
@@ -47,7 +47,7 @@ try {
 		/v:minimal
 	if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
 
-	$testAssembly = Join-Path $repo 'CalendarSync.Tests\bin\Release\net8.0-windows\CalendarSync.Tests.dll'
+	$testAssembly = Join-Path $repo 'tests\bin\Release\net8.0-windows\CalendarSync.Tests.dll'
 	dotnet vstest $testAssembly /Platform:x86
 	if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
 

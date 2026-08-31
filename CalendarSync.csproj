@@ -26,8 +26,11 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<!-- Keep the old path excluded for existing worktrees with generated files. -->
 		<Compile Remove="CalendarSync.Tests\**\*.cs" />
 		<None Remove="CalendarSync.Tests\**\*" />
+		<Compile Remove="tests\**\*.cs" />
+		<None Remove="tests\**\*" />
 	</ItemGroup>
 
 	<ItemGroup>
