@@ -73,6 +73,17 @@ not start a second COM operation while a timed-out call is exiting. It makes no
 iCloud changes when Outlook cannot produce a complete snapshot. Run the
 [COM endurance procedure](docs/com-endurance.md) after a COM change.
 
+CalendarSync retries one rejected authentication request before it stops the
+cycle. An event verification read can also retry one HTTP 403 after a successful
+write. A persistent HTTP 403 is a request rejection, not a password diagnosis.
+Logs retain the HTTP status and operation. Failed cycles retry at the normal
+sync interval. A credential notice requires two consecutive HTTP 401 cycles
+with no successful iCloud request. A successful request resets this count.
+Other failures also reset it. Notices are limited to one per 30 minutes.
+
+Use the [release and deployment procedure](docs/releases.md) to deliver a tested
+package. Keep the installed configuration and logs when replacing program files.
+
 ## Validation
 
 ```powershell

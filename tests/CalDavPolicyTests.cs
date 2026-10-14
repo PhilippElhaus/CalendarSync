@@ -10,9 +10,11 @@ public sealed class CalDavPolicyTests
 	[InlineData((HttpStatusCode)429, true)]
 	[InlineData(HttpStatusCode.InternalServerError, true)]
 	[InlineData(HttpStatusCode.BadRequest, false)]
+	[InlineData(HttpStatusCode.Unauthorized, false)]
+	[InlineData(HttpStatusCode.Forbidden, false)]
 	[InlineData(HttpStatusCode.NotFound, false)]
 	public void RetryPolicyOnlyRetriesTransientStatuses(HttpStatusCode statusCode, bool expected)
 	{
-		Assert.Equal(expected, CalendarSyncService.IsTransientCalDavStatus(statusCode));
+		Assert.Equal(expected, CalDavRequests.IsTransientStatus(statusCode));
 	}
 }

@@ -18,7 +18,8 @@ public partial class CalendarSyncService
 				client,
 				() => new HttpRequestMessage(HttpMethod.Get, eventUrl),
 				"event verification read",
-				token).ConfigureAwait(false);
+				token,
+				retryVerificationAccess: true).ConfigureAwait(false);
 			var ics = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
 			var calendar = Calendar.Load(ics);
 			var calEvent = calendar?.Events?.FirstOrDefault();
@@ -55,7 +56,7 @@ public partial class CalendarSyncService
 		{
 			throw;
 		}
-		catch (UnauthorizedAccessException)
+		catch (CalDavAccessException)
 		{
 			throw;
 		}
@@ -101,7 +102,7 @@ public partial class CalendarSyncService
 		{
 			throw;
 		}
-		catch (UnauthorizedAccessException)
+		catch (CalDavAccessException)
 		{
 			throw;
 		}

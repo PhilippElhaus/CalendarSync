@@ -9,6 +9,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+		<Version>2.3.0</Version>
 
 		<ApplicationIcon>ico\cal64.ico</ApplicationIcon>
 		<PlatformTarget>x86</PlatformTarget>

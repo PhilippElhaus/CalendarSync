@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,7 +33,8 @@ public partial class CalendarSyncService : BackgroundService
 	private CancellationTokenSource? _currentOpCts;
 	private CancellationToken _serviceStoppingToken = CancellationToken.None;
 	private DateTimeOffset? _lastSuccessfulSync;
-	private DateTime _lastAuthorizationNoticeUtc = DateTime.MinValue;
+	private readonly CalDavAuthenticationNotice _authenticationNotice = new();
+	private bool _hadSuccessfulCalDavRequest;
 	private static readonly Guid OutlookApplicationClsid = new("0006F03A-0000-0000-C000-000000000046");
 
 	[DllImport("oleaut32.dll", EntryPoint = "GetActiveObject")]
@@ -107,6 +109,8 @@ public partial class CalendarSyncService : BackgroundService
 		var stopwatch = Stopwatch.StartNew();
 		var sourceEventCount = 0;
 		var outcome = SyncCycleOutcome.Failed;
+		HttpStatusCode? accessFailureStatus = null;
+		_hadSuccessfulCalDavRequest = false;
 		using var scope = _logger.BeginScope(new Dictionary<string, object> { ["SyncCycleId"] = cycleId });
 
 		EventRecorder.WriteEntry(fullResync ? "Full re-sync started" : "Sync started", EventLogEntryType.Information);
@@ -137,12 +141,14 @@ public partial class CalendarSyncService : BackgroundService
 			_tray.SetIdle($"Idle - last sync {_lastSuccessfulSync:HH:mm}");
 			return outcome;
 		}
-		catch (UnauthorizedAccessException ex)
+		catch (CalDavAccessException ex)
 		{
-			_logger.LogError(ex, "iCloud authorization failed. Check credentials.");
-			EventRecorder.WriteEntry("iCloud authorization failed", EventLogEntryType.Error);
-			NotifyAuthorizationFailure();
-			_tray.SetFailed("iCloud authorization failed");
+			accessFailureStatus = ex.StatusCode;
+			_logger.LogError(ex,
+				"iCloud rejected {Operation} with HTTP {Status}. This cycle stopped; the next cycle will retry.",
+				ex.Operation, (int)ex.StatusCode!.Value);
+			EventRecorder.WriteEntry($"iCloud request rejected with HTTP {(int)ex.StatusCode.Value}", EventLogEntryType.Error);
+			_tray.SetFailed($"iCloud HTTP {(int)ex.StatusCode.Value}; retry pending");
 			return SyncCycleOutcome.Failed;
 		}
 		catch (OutlookOperationInProgressException ex)
@@ -182,6 +188,13 @@ public partial class CalendarSyncService : BackgroundService
 		finally
 		{
 			stopwatch.Stop();
+			if (_authenticationNotice.RecordCycle(accessFailureStatus, _hadSuccessfulCalDavRequest, DateTimeOffset.UtcNow))
+			{
+				_tray.ShowError("CalendarSync",
+					"iCloud repeatedly rejected authentication (HTTP 401). " +
+					"No iCloud request succeeded in these cycles. Check the account and app-specific password if this continues.");
+			}
+
 			_logger.LogInformation(
 				"Sync cycle {CycleId} completed with outcome {Outcome} in {ElapsedMs} ms. SourceEvents={SourceEvents}, LastSuccess={LastSuccess}.",
 				cycleId,
@@ -285,15 +298,16 @@ public partial class CalendarSyncService : BackgroundService
 		}
 	}
 
-	private void NotifyAuthorizationFailure()
+	private async Task<HttpResponseMessage> SendCalDavAsync(
+		HttpClient client,
+		Func<HttpRequestMessage> requestFactory,
+		string operation,
+		CancellationToken token,
+		bool retryVerificationAccess = false)
 	{
-		var now = DateTime.UtcNow;
-		if (now - _lastAuthorizationNoticeUtc < TimeSpan.FromMinutes(30))
-		{
-			return;
-		}
-
-		_lastAuthorizationNoticeUtc = now;
-		_tray.ShowError("CalendarSync", "iCloud authorization failed. Check credentials.");
+		var response = await CalDavRequests.SendAsync(
+			client, requestFactory, operation, token, _logger, retryVerificationAccess).ConfigureAwait(false);
+		_hadSuccessfulCalDavRequest = true;
+		return response;
 	}
 }

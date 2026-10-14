@@ -3,15 +3,17 @@ using Microsoft.Extensions.Logging;
 
 namespace CalendarSync;
 
-public partial class CalendarSyncService
+internal static class CalDavRequests
 {
 	private const int MaxCalDavAttempts = 2;
 
-	private async Task<HttpResponseMessage> SendCalDavAsync(
+	internal static async Task<HttpResponseMessage> SendAsync(
 		HttpClient client,
 		Func<HttpRequestMessage> requestFactory,
 		string operation,
-		CancellationToken token)
+		CancellationToken token,
+		ILogger logger,
+		bool retryVerificationAccess = false)
 	{
 		for (var attempt = 1; attempt <= MaxCalDavAttempts; attempt++)
 		{
@@ -25,44 +27,52 @@ public partial class CalendarSyncService
 					HttpCompletionOption.ResponseHeadersRead,
 					token).ConfigureAwait(false);
 
-				if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-				{
-					response.Dispose();
-					throw new UnauthorizedAccessException("iCloud authentication failed.");
-				}
-
 				if (response.IsSuccessStatusCode)
 				{
+					if (attempt > 1)
+					{
+						logger.LogInformation("CalDAV {Operation} succeeded on attempt {Attempt}.", operation, attempt);
+					}
+
 					return response;
 				}
 
 				var statusCode = response.StatusCode;
-				var reason = response.ReasonPhrase;
 				var retryDelay = GetRetryDelay(response, attempt);
-				var shouldRetry = IsTransientCalDavStatus(statusCode) && attempt < MaxCalDavAttempts;
+				// Retry one 401 before reporting it. A verification GET can also
+				// retry one 403 after its PUT succeeded. Do not replay forbidden writes.
+				var accessRejected = statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
+				var retryAccess = statusCode == HttpStatusCode.Unauthorized ||
+					(statusCode == HttpStatusCode.Forbidden && retryVerificationAccess && request.Method == HttpMethod.Get);
+				var shouldRetry = (IsTransientStatus(statusCode) || retryAccess) && attempt < MaxCalDavAttempts;
 				response.Dispose();
 
 				if (!shouldRetry)
 				{
+					if (accessRejected)
+					{
+						throw new CalDavAccessException(operation, statusCode);
+					}
+
 					throw new HttpRequestException(
-						$"CalDAV {operation} failed with {(int)statusCode} {reason}.",
+						$"CalDAV {operation} failed with HTTP {(int)statusCode} ({statusCode}).",
 						null,
 						statusCode);
 				}
 
-				_logger.LogWarning(
-					"CalDAV {Operation} attempt {Attempt}/{MaxAttempts} returned {Status}. Retrying after {DelayMs} ms.",
+				logger.LogWarning(
+					"CalDAV {Operation} attempt {Attempt}/{MaxAttempts} returned HTTP {Status}. Retrying after {DelayMs} ms.",
 					operation,
 					attempt,
 					MaxCalDavAttempts,
-					statusCode,
+					(int)statusCode,
 					retryDelay.TotalMilliseconds);
 				await Task.Delay(retryDelay, token).ConfigureAwait(false);
 			}
 			catch (HttpRequestException ex) when (attempt < MaxCalDavAttempts && ex.StatusCode == null)
 			{
 				var retryDelay = TimeSpan.FromSeconds(attempt * 2);
-				_logger.LogWarning(
+				logger.LogWarning(
 					ex,
 					"CalDAV {Operation} attempt {Attempt}/{MaxAttempts} failed at the transport layer. Retrying after {DelayMs} ms.",
 					operation,
@@ -79,7 +89,7 @@ public partial class CalendarSyncService
 				}
 
 				var retryDelay = TimeSpan.FromSeconds(attempt * 2);
-				_logger.LogWarning(
+				logger.LogWarning(
 					"CalDAV {Operation} attempt {Attempt}/{MaxAttempts} timed out. Retrying after {DelayMs} ms.",
 					operation,
 					attempt,
@@ -92,7 +102,7 @@ public partial class CalendarSyncService
 		throw new InvalidOperationException($"CalDAV {operation} exhausted its retry budget.");
 	}
 
-	internal static bool IsTransientCalDavStatus(HttpStatusCode statusCode) =>
+	internal static bool IsTransientStatus(HttpStatusCode statusCode) =>
 		statusCode == HttpStatusCode.RequestTimeout ||
 		(int)statusCode == 429 ||
 		(int)statusCode >= 500;
