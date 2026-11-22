@@ -9,7 +9,7 @@ SDK, and full Visual Studio MSBuild. Run the repository checks first:
 
 The validation script removes its temporary package. Commit the validated
 source before building the delivery package. This keeps its embedded source
-revision equal to the release commit. Patch `v2.3.2` uses build version `2.3.2`.
+revision equal to the release commit. Patch `v2.3.3` uses build version `2.3.3`.
 Complete the [attended COM endurance check](com-endurance.md) on a dedicated
 test calendar after changes to Outlook extraction. Keep all test records free
 of calendar data and credentials.
@@ -21,8 +21,8 @@ temporary directory. Do not use `D:` for release staging.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-$releaseVersion = '2.3.2'
-$releaseTag = 'v2.3.2'
+$releaseVersion = '2.3.3'
+$releaseTag = 'v2.3.3'
 $releaseCommit = git rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the release commit.' }
 $releaseTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())

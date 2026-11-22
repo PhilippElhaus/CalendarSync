@@ -1,10 +1,8 @@
-using System.Net;
-
 namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private async Task WipeICloudCalendarAsync(HttpClient client, Uri calendarUri, CycleMetrics metrics, CancellationToken token)
+	private async Task<Dictionary<string, RemoteResource>> WipeICloudCalendarAsync(HttpClient client, Uri calendarUri, CycleMetrics metrics, CancellationToken token)
 	{
 		metrics.Stage = "WipeListing";
 		var resources = await GetICloudEventsAsync(client, calendarUri, null, token).ConfigureAwait(false);
@@ -13,30 +11,34 @@ public partial class CalendarSyncService
 		_tray?.SetDeleting();
 		foreach (var resource in resources.Values)
 		{
-			_tray?.UpdateText($"Deleting... {metrics.WipeDeleted}/{resources.Count}");
-			await Task.Delay(300, token).ConfigureAwait(false);
-			await DeleteResourceAsync(client, resource, "calendar wipe deletion", token).ConfigureAwait(false);
-			metrics.WipeDeleted++;
+			_tray?.UpdateText($"Deleting... {metrics.WipeDeletes.Confirmed}/{resources.Count}");
+			await _wipeDelay(TimeSpan.FromMilliseconds(300), token).ConfigureAwait(false);
+			await DeleteResourceAsync(client, resource, "calendar wipe deletion", metrics.WipeDeletes, token).ConfigureAwait(false);
 		}
 
-		if (metrics.WipeDeleted > 0)
+		if (metrics.WipeDeletes.Confirmed > 0)
 		{
 			metrics.Stage = "WipeRecheckWait";
-			await Task.Delay(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+			await _wipeDelay(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
 		}
+
+		metrics.Stage = "WipeRecheck";
+		var remaining = await GetICloudEventsAsync(client, calendarUri, null, token).ConfigureAwait(false);
+		metrics.WipeRemaining = remaining.Count;
+		if (remaining.Count > 0)
+		{
+			throw new CalDavDataException("WipeNotEmpty");
+		}
+		return remaining;
 	}
 
-	private async Task DeleteResourceAsync(HttpClient client, RemoteResource resource, string operation, CancellationToken token)
+	private async Task DeleteResourceAsync(HttpClient client, RemoteResource resource, string operation, MutationCounts counts, CancellationToken token)
 	{
-		using var response = await SendCalDavAsync(client, () =>
+		using var response = await SendMutationAsync(client, () =>
 		{
 			var request = new HttpRequestMessage(HttpMethod.Delete, resource.Uri);
 			request.Headers.IfMatch.Add(resource.ETag);
 			return request;
-		}, operation, token).ConfigureAwait(false);
-		if (response.StatusCode is not (HttpStatusCode.NoContent or HttpStatusCode.OK))
-		{
-			throw new CalDavDataException("DeleteNotConfirmed");
-		}
+		}, operation, counts, token).ConfigureAwait(false);
 	}
 }

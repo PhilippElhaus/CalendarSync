@@ -29,8 +29,17 @@ public partial class CalendarSyncService
 		{
 			return false;
 		}
-		return expected.HasTime
-			? actual.TzId != null && expected.AsUtc.Ticks / TimeSpan.TicksPerSecond == actual.AsUtc.Ticks / TimeSpan.TicksPerSecond
-			: expected.Value.Date == actual.Value.Date;
+		if (!expected.HasTime)
+		{
+			return expected.Value.Date == actual.Value.Date;
+		}
+		try
+		{
+			return actual.TzId != null && expected.AsUtc.Ticks / TimeSpan.TicksPerSecond == actual.AsUtc.Ticks / TimeSpan.TicksPerSecond;
+		}
+		catch (ArgumentException)
+		{
+			throw new CalDavDataException("EventTimeUnresolvable");
+		}
 	}
 }

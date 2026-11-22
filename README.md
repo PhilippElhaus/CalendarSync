@@ -81,6 +81,9 @@ does not open an iCloud connection for an incomplete snapshot, including for
 
 CalendarSync requires a complete depth-one CalDAV listing. It stops if the
 response indicates a partial listing, a continuation, or an ambiguous resource.
+The listing must identify the type of each resource. Each target `.ics` object
+must have a strong ETag. A collection is not a deletion target, even if its
+name ends in `.ics`.
 It compares the fields it manages before it uploads an event. It preserves the
 remote description when Outlook does not supply the body. It creates events
 only at unused URLs. It updates an existing event only when the event UID
@@ -90,15 +93,21 @@ Automatic cleanup checks both the resource name and the event UID. It removes
 only stale events with the current UID format for the configured `SourceId`.
 It requires a current revision and deletes only after all desired events are
 unchanged or have passed verification. Verification checks the UID, time or
-all-day dates, summary, location, description, and reminders. It never issues
-a correction write. A failed or unconfirmed request stops the cycle. It does
-not roll back writes or deletes that have already completed.
+all-day dates, summary, location, description, and reminders. CalendarSync
+requests a fresh, complete event with a strong GET ETag. It uses the PUT ETag
+as a precondition when the server returns a strong one. A malformed ownership
+read stops cleanup before any stale deletes. One complete event with a different
+UID is left untouched. CalendarSync never issues a correction write. A failed
+or unconfirmed request stops the cycle. It does not roll back writes or deletes
+that have already completed.
 
 Use source IDs that differ even when compared without case. Leave legacy copies
 in place until you review them. The confirmed `Full Re-Sync` command attempts
 to delete all listed `.ics` resources in the destination, including resources
-from other sources. The command can stop after some deletes. Use it only when
-you intend to remove those events.
+from other sources. It rebuilds only after a new unfiltered listing shows no
+`.ics` objects. The command can stop after some deletes. Use it only when you
+intend to remove those events. It cannot recover descriptions that Outlook
+does not supply.
 
 CalendarSync retries one rejected authentication request before it stops the
 cycle. An event verification read can also retry one HTTP 403 after a successful
@@ -121,7 +130,14 @@ Other failures also reset it. Notices are limited to one per 30 minutes.
   verification, and deletion. Failed cycle summaries use `Warning`. Request
   retries include the operation, attempt, and status or failure class. An
   accepted write without successful verification is distinct from an unchanged
-  event or a verified write. A failed conditional request requires a fresh cycle.
+  event or a verified write. Schema 2 records `MutationOutcome`: `None` means
+  no mutation was confirmed or remains uncertain. `Possible` means a request
+  may have taken effect without confirmation. `Partial` means at least one
+  mutation was confirmed before the cycle stopped. `Confirmed` means a cycle
+  with confirmed mutations completed. Separate counters identify possible
+  uploads, cleanup deletes, and wipe deletes. `WipeRemaining` counts `.ics`
+  objects in the wipe recheck when the listing is complete. A failed
+  conditional request requires a fresh cycle.
 - `bootstrap.log` keeps up to 64 KiB of startup and dependency-probe outcomes.
   When it reaches the cap, it starts again. Windows Event Log receives fixed
   lifecycle and failure messages when the source is available. Its retention

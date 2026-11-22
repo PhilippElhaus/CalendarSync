@@ -13,7 +13,8 @@ internal static class CalDavRequests
 		string operation,
 		CancellationToken token,
 		ILogger logger,
-		bool retryVerificationAccess = false)
+		bool retryVerificationAccess = false,
+		Action? markMutationPossible = null)
 	{
 		for (var attempt = 1; attempt <= MaxCalDavAttempts; attempt++)
 		{
@@ -23,10 +24,20 @@ internal static class CalDavRequests
 
 			try
 			{
-				var response = await client.SendAsync(
-					request,
-					readOnly ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead,
-					token).ConfigureAwait(false);
+				HttpResponseMessage response;
+				try
+				{
+					response = await client.SendAsync(
+						request,
+						readOnly ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead,
+						token).ConfigureAwait(false);
+				}
+				catch (Exception ex) when (markMutationPossible != null &&
+					ex is OperationCanceledException or HttpRequestException { StatusCode: null })
+				{
+					markMutationPossible();
+					throw;
+				}
 
 				if (response.IsSuccessStatusCode)
 				{
@@ -39,6 +50,10 @@ internal static class CalDavRequests
 				}
 
 				var statusCode = response.StatusCode;
+				if (statusCode == HttpStatusCode.RequestTimeout || (int)statusCode >= 500)
+				{
+					markMutationPossible?.Invoke();
+				}
 				var retryDelay = GetRetryDelay(response, attempt);
 				// Retry one 401 before reporting it. A verification GET can also
 				// retry one 403 after its PUT succeeded. Do not replay forbidden writes.

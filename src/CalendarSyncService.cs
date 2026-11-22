@@ -21,6 +21,7 @@ public partial class CalendarSyncService : BackgroundService
 	private readonly TrayIconManager? _tray;
 	private readonly Func<CancellationToken, Task<OutlookSnapshot>> _readSnapshot;
 	private readonly Func<HttpClient> _createClient;
+	private readonly Func<TimeSpan, CancellationToken, Task> _wipeDelay;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
 	private readonly string _sourceId;
@@ -46,13 +47,15 @@ public partial class CalendarSyncService : BackgroundService
 	}
 
 	internal CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger,
-		Func<CancellationToken, Task<OutlookSnapshot>>? readSnapshot, Func<HttpClient>? createClient, TrayIconManager? tray = null)
+		Func<CancellationToken, Task<OutlookSnapshot>>? readSnapshot, Func<HttpClient>? createClient, TrayIconManager? tray = null,
+		Func<TimeSpan, CancellationToken, Task>? wipeDelay = null)
 	{
 		_config = config ?? throw new ArgumentNullException(nameof(config));
 		_logger = new BestEffortLogger(logger ?? throw new ArgumentNullException(nameof(logger)));
 		_tray = tray;
 		_readSnapshot = readSnapshot ?? FetchOutlookEventsAsync;
 		_createClient = createClient ?? CreateHttpClient;
+		_wipeDelay = wipeDelay ?? Task.Delay;
 		_initialWait = TimeSpan.FromSeconds(_config.InitialWaitSeconds);
 		_syncInterval = TimeSpan.FromMinutes(_config.SyncIntervalMinutes);
 		_sourceId = _config.SourceId ?? string.Empty;
@@ -205,12 +208,13 @@ public partial class CalendarSyncService : BackgroundService
 		catch (Exception ex)
 		{
 			var requestError = ex as HttpRequestException;
-			httpStatus = (int?)requestError?.StatusCode;
+			httpStatus = (int?)(requestError?.StatusCode ?? (ex as CalDavDataException)?.StatusCode);
 			reason = ex switch
 			{
 				CalDavDataException error => error.Reason,
 				CalDavTimeoutException => "CalDavTimeout",
 				HttpRequestException { StatusCode: HttpStatusCode.PreconditionFailed } => "PreconditionFailed",
+				HttpRequestException { StatusCode: not null } when metrics.HasPossibleMutations => "HttpMutationUnconfirmed",
 				HttpRequestException { StatusCode: not null } => "HttpRejected",
 				HttpRequestException => "TransportOrResponseBuffer",
 				COMException => "OutlookComFailure",
@@ -231,11 +235,13 @@ public partial class CalendarSyncService : BackgroundService
 					"No iCloud request succeeded in these cycles. Check the account and app-specific password if this continues.");
 			}
 
-			_logger.Log(outcome == SyncCycleOutcome.Failed ? LogLevel.Warning : LogLevel.Information,
-				"SyncCycle Schema={Schema} CycleId={CycleId} FullResync={FullResync} Outcome={Outcome} Stage={Stage} Reason={Reason} HttpStatus={HttpStatus} ElapsedMs={ElapsedMs} SourceEvents={SourceEvents} FailedItems={FailedItems} HitItemLimit={HitItemLimit} BodyNotRead={BodyNotRead} Listed={Listed} Unchanged={Unchanged} Written={Written} Verified={Verified} StaleCandidates={StaleCandidates} OwnershipSkipped={OwnershipSkipped} Deleted={Deleted} WipeListed={WipeListed} WipeDeleted={WipeDeleted}.",
-				1, cycleId, fullResync, outcome, metrics.Stage, reason, httpStatus, stopwatch.ElapsedMilliseconds,
-				sourceEventCount, metrics.FailedItems, metrics.HitItemLimit, metrics.BodyNotRead, metrics.Listed, metrics.Unchanged, metrics.Written,
-				metrics.Verified, metrics.StaleCandidates, metrics.OwnershipSkipped, metrics.Deleted, metrics.WipeListed, metrics.WipeDeleted);
+			var mutationOutcome = metrics.GetMutationOutcome(outcome);
+			_logger.Log(outcome == SyncCycleOutcome.Failed || mutationOutcome is "Partial" or "Possible" ? LogLevel.Warning : LogLevel.Information,
+				"SyncCycle Schema={Schema} CycleId={CycleId} FullResync={FullResync} Outcome={Outcome} Stage={Stage} Reason={Reason} HttpStatus={HttpStatus} ElapsedMs={ElapsedMs} SourceEvents={SourceEvents} FailedItems={FailedItems} HitItemLimit={HitItemLimit} BodyNotRead={BodyNotRead} Listed={Listed} Unchanged={Unchanged} Written={Written} Verified={Verified} StaleCandidates={StaleCandidates} OwnershipSkipped={OwnershipSkipped} Deleted={Deleted} WipeListed={WipeListed} WipeDeleted={WipeDeleted} MutationOutcome={MutationOutcome} WritePossible={WritePossible} DeletePossible={DeletePossible} WipeDeletePossible={WipeDeletePossible} WipeRemaining={WipeRemaining}.",
+				2, cycleId, fullResync, outcome, metrics.Stage, reason, httpStatus, stopwatch.ElapsedMilliseconds,
+				sourceEventCount, metrics.FailedItems, metrics.HitItemLimit, metrics.BodyNotRead, metrics.Listed, metrics.Unchanged, metrics.Writes.Confirmed,
+				metrics.Verified, metrics.StaleCandidates, metrics.OwnershipSkipped, metrics.Deletes.Confirmed, metrics.WipeListed, metrics.WipeDeletes.Confirmed,
+				mutationOutcome, metrics.Writes.Possible, metrics.Deletes.Possible, metrics.WipeDeletes.Possible, metrics.WipeRemaining);
 		}
 	}
 
@@ -246,14 +252,21 @@ public partial class CalendarSyncService : BackgroundService
 		CancellationToken token)
 	{
 		using var client = _createClient();
+		var calendarUri = new Uri(BuildCalendarUrl());
+		Dictionary<string, RemoteResource> remote;
 
 		if (fullResync)
 		{
 			_logger.LogInformation("Complete Outlook snapshot obtained. Starting requested full iCloud wipe.");
-			await WipeICloudCalendarAsync(client, new Uri(BuildCalendarUrl()), metrics, token).ConfigureAwait(false);
+			remote = await WipeICloudCalendarAsync(client, calendarUri, metrics, token).ConfigureAwait(false);
+		}
+		else
+		{
+			metrics.Stage = "Listing";
+			remote = await GetICloudEventsAsync(client, calendarUri, _sourceId, token).ConfigureAwait(false);
 		}
 
-		await SyncWithICloudAsync(client, outlookEvents, metrics, token).ConfigureAwait(false);
+		await SyncWithICloudAsync(client, calendarUri, outlookEvents, remote, metrics, token).ConfigureAwait(false);
 		metrics.Stage = "Complete";
 	}
 
@@ -265,13 +278,26 @@ public partial class CalendarSyncService : BackgroundService
 		internal int BodyNotRead;
 		internal int Listed;
 		internal int Unchanged;
-		internal int Written;
+		internal readonly MutationCounts Writes = new();
 		internal int Verified;
 		internal int StaleCandidates;
 		internal int OwnershipSkipped;
-		internal int Deleted;
+		internal readonly MutationCounts Deletes = new();
 		internal int WipeListed;
-		internal int WipeDeleted;
+		internal readonly MutationCounts WipeDeletes = new();
+		internal int? WipeRemaining;
+		internal bool HasPossibleMutations => Writes.Possible + Deletes.Possible + WipeDeletes.Possible > 0;
+
+		internal string GetMutationOutcome(SyncCycleOutcome outcome) =>
+			Writes.Confirmed + Deletes.Confirmed + WipeDeletes.Confirmed > 0
+				? outcome == SyncCycleOutcome.Succeeded ? "Confirmed" : "Partial"
+				: HasPossibleMutations ? "Possible" : "None";
+	}
+
+	private sealed class MutationCounts
+	{
+		internal int Confirmed;
+		internal int Possible;
 	}
 
 	public async Task TriggerFullResyncAsync()
@@ -348,11 +374,29 @@ public partial class CalendarSyncService : BackgroundService
 		Func<HttpRequestMessage> requestFactory,
 		string operation,
 		CancellationToken token,
-		bool retryVerificationAccess = false)
+		bool retryVerificationAccess = false,
+		Action? markMutationPossible = null)
 	{
 		var response = await CalDavRequests.SendAsync(
-			client, requestFactory, operation, token, _logger, retryVerificationAccess).ConfigureAwait(false);
+			client, requestFactory, operation, token, _logger, retryVerificationAccess, markMutationPossible).ConfigureAwait(false);
 		_hadSuccessfulCalDavRequest = true;
 		return response;
+	}
+
+	private async Task<HttpResponseMessage> SendMutationAsync(HttpClient client, Func<HttpRequestMessage> requestFactory,
+		string operation, MutationCounts counts, CancellationToken token, bool isUpsert = false)
+	{
+		var response = await SendCalDavAsync(client, requestFactory, operation, token,
+			markMutationPossible: () => counts.Possible++).ConfigureAwait(false);
+		var status = response.StatusCode;
+		if (status is HttpStatusCode.NoContent or HttpStatusCode.OK || (isUpsert && status == HttpStatusCode.Created))
+		{
+			counts.Confirmed++;
+			return response;
+		}
+
+		response.Dispose();
+		counts.Possible++;
+		throw new CalDavDataException(isUpsert ? "WriteNotConfirmed" : "DeleteNotConfirmed", status);
 	}
 }

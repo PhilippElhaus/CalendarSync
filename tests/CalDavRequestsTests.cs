@@ -139,7 +139,7 @@ public sealed class CalDavRequestsTests
 		var staleUid = CalendarRules.BuildManagedUid(sourceId, "stale", startUtc);
 		var neighboringUid = CalendarRules.BuildManagedUid("work.ics-outlook-east", "neighbor", startUtc);
 		var entries = new[] { currentUid, staleUid, neighboringUid, "work.ics-legacy", "personal-event" };
-		var resources = string.Concat(entries.Select(uid => $"<response><href>/calendar/{uid}.ics</href><propstat><prop><getetag>\"revision\"</getetag></prop><status>HTTP/1.1 200 OK</status></propstat></response>"));
+		var resources = string.Concat(entries.Select(uid => $"<response><href>/calendar/{uid}.ics</href><propstat><prop><getetag>\"revision\"</getetag><resourcetype/></prop><status>HTTP/1.1 200 OK</status></propstat></response>"));
 		using var handler = new SequenceHandler(new HttpResponseMessage(HttpStatusCode.MultiStatus)
 		{
 			Content = new StringContent($"<multistatus xmlns=\"DAV:\"><response><href>/calendar/</href><propstat><prop><resourcetype><collection/></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat></response>{resources}</multistatus>")

@@ -1,17 +1,14 @@
 using Ical.Net;
 using Ical.Net.Serialization;
-using System.Net;
 using System.Text;
 
 namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CycleMetrics metrics, CancellationToken token)
+	private async Task SyncWithICloudAsync(HttpClient client, Uri calendarUri, Dictionary<string, OutlookEventDto> outlookEvents,
+		Dictionary<string, RemoteResource> remote, CycleMetrics metrics, CancellationToken token)
 	{
-		var calendarUri = new Uri(BuildCalendarUrl());
-		metrics.Stage = "Listing";
-		var remote = await GetICloudEventsAsync(client, calendarUri, _sourceId, token).ConfigureAwait(false);
 		metrics.Listed = remote.Count;
 		_tray?.SetUpdating();
 
@@ -49,7 +46,7 @@ public partial class CalendarSyncService
 			{
 				throw new CalDavDataException("EventSerializationFailed");
 			}
-			using var response = await SendCalDavAsync(client, () =>
+			using var response = await SendMutationAsync(client, () =>
 			{
 				var request = new HttpRequestMessage(HttpMethod.Put, eventUri)
 				{
@@ -64,15 +61,10 @@ public partial class CalendarSyncService
 					request.Headers.IfMatch.Add(resource.ETag);
 				}
 				return request;
-			}, "event upsert", token).ConfigureAwait(false);
-			if (response.StatusCode is not (HttpStatusCode.Created or HttpStatusCode.NoContent or HttpStatusCode.OK))
-			{
-				throw new CalDavDataException("WriteNotConfirmed");
-			}
-			metrics.Written++;
+			}, "event upsert", metrics.Writes, token, isUpsert: true).ConfigureAwait(false);
 
 			metrics.Stage = "Verify";
-			var tag = IsStrongTag(response.Headers.ETag) ? response.Headers.ETag : null;
+			var tag = GetStrongResponseTag(response);
 			var verified = await ReadRemoteEventAsync(client, eventUri, uid, tag, true, token).ConfigureAwait(false);
 			if (!MatchesEvent(desired, verified))
 			{
@@ -81,7 +73,7 @@ public partial class CalendarSyncService
 			metrics.Verified++;
 		}
 
-		metrics.Stage = "StaleCleanup";
+		metrics.Stage = "StaleOwnershipRead";
 		var stale = CalendarRules.GetStaleManagedUids(_sourceId, remote.Keys, outlookEvents.Keys);
 		metrics.StaleCandidates = stale.Count;
 		if (stale.Count > 0)
@@ -102,10 +94,10 @@ public partial class CalendarSyncService
 				metrics.OwnershipSkipped++;
 			}
 		}
+		metrics.Stage = "StaleDelete";
 		foreach (var resource in ownedStale)
 		{
-			await DeleteResourceAsync(client, resource, "stale event deletion", token).ConfigureAwait(false);
-			metrics.Deleted++;
+			await DeleteResourceAsync(client, resource, "stale event deletion", metrics.Deletes, token).ConfigureAwait(false);
 		}
 	}
 }
