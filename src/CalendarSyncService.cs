@@ -19,7 +19,6 @@ public partial class CalendarSyncService : BackgroundService
 	private readonly SyncConfig _config;
 	private readonly ILogger<CalendarSyncService> _logger;
 	private readonly TrayIconManager _tray;
-	private static bool _isFirstRun = true;
 	private const double TimezoneSanityToleranceMinutes = 1;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
@@ -211,19 +210,11 @@ public partial class CalendarSyncService : BackgroundService
 		CancellationToken token)
 	{
 		using var client = CreateHttpClient();
-		var calendarUrl = BuildCalendarUrl();
 
 		if (fullResync)
 		{
 			_logger.LogInformation("Complete Outlook snapshot obtained. Starting requested full iCloud wipe.");
-			await WipeICloudCalendarAsync(client, calendarUrl, token, false).ConfigureAwait(false);
-			_isFirstRun = false;
-		}
-		else if (_isFirstRun)
-		{
-			_logger.LogInformation("First process run detected, initiating source-scoped wipe.");
-			await WipeICloudCalendarAsync(client, calendarUrl, token, true).ConfigureAwait(false);
-			_isFirstRun = false;
+			await WipeICloudCalendarAsync(client, BuildCalendarUrl(), token).ConfigureAwait(false);
 		}
 
 		await SyncWithICloudAsync(client, outlookEvents, token).ConfigureAwait(false);

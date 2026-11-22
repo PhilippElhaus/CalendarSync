@@ -1,15 +1,19 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Ical.Net;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 
 namespace CalendarSync;
 
-internal static class CalendarRules
+internal static partial class CalendarRules
 {
 	private const double AllDayToleranceMinutes = 5;
+
+	[GeneratedRegex(@"\A[0-9a-fA-F]{64}-[0-9]{8}[Tt][0-9]{6}[Zz]\z", RegexOptions.CultureInvariant)]
+	private static partial Regex ManagedUidSuffixRegex();
 
 	public static bool DetermineAllDay(DateTime startLocal, DateTime endLocal, bool flaggedAllDay)
 	{
@@ -62,30 +66,14 @@ internal static class CalendarRules
 
 	public static bool IsManagedUid(string sourceId, string? uid)
 	{
-		if (string.IsNullOrWhiteSpace(uid))
+		if (string.IsNullOrWhiteSpace(sourceId) || string.IsNullOrEmpty(uid))
 		{
 			return false;
 		}
 
-		var normalized = uid.Trim();
-		var prefixes = new List<string>();
-
-		if (!string.IsNullOrEmpty(sourceId))
-		{
-			prefixes.Add($"{sourceId}-outlook-");
-		}
-
-		prefixes.Add("-outlook-");
-		prefixes.Add("outlook-");
-
-		if (prefixes.Any(prefix => normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-		{
-			return true;
-		}
-
-		// Keep compatibility with UIDs emitted before the current UID format.
-		return !string.IsNullOrEmpty(sourceId) &&
-			normalized.StartsWith($"{sourceId}-", StringComparison.OrdinalIgnoreCase);
+		var prefix = $"{sourceId}-outlook-";
+		return uid.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+			ManagedUidSuffixRegex().IsMatch(uid.AsSpan(prefix.Length));
 	}
 
 	public static CalendarEvent CreateCalendarEvent(OutlookEventDto appointment, string uid, string? tag)

@@ -18,26 +18,32 @@ public sealed class CalendarRulesTests
 	}
 
 	[Theory]
-	[InlineData("work-outlook-abc-20260830T100000Z", true)]
-	[InlineData("work-legacy-event", true)]
-	[InlineData("outlook-abc-20260830T100000Z", true)]
-	[InlineData("other-outlook-abc-20260830T100000Z", false)]
-	[InlineData("personal-event", false)]
-	public void ManagedUidRecognitionPreservesCurrentAndLegacyOwnership(string uid, bool expected)
+	[InlineData("work", "work", true)]
+	[InlineData("work", "WORK", true)]
+	[InlineData("work", "work-east", false)]
+	[InlineData("work", "work-outlook-east", false)]
+	[InlineData("work", "", false)]
+	[InlineData("", "", false)]
+	public void ManagedUidRequiresTheExactSource(string sourceId, string eventSourceId, bool expected)
 	{
-		Assert.Equal(expected, CalendarRules.IsManagedUid("work", uid));
+		Assert.Equal(expected, CalendarRules.IsManagedUid(sourceId, CreateUid(eventSourceId, "appointment")));
 	}
 
 	[Fact]
 	public void StaleSelectionNeverIncludesUnmanagedEvents()
 	{
+		var oldUid = CreateUid("work", "old");
+		var currentUid = CreateUid("work", "current");
 		var stale = CalendarRules.GetStaleManagedUids(
 			"work",
-			["work-outlook-old", "work-outlook-current", "personal-event"],
-			["work-outlook-current"]);
+			[oldUid, currentUid, CreateUid("work-east", "other"), "work-legacy-event", "personal-event"],
+			[currentUid]);
 
-		Assert.Equal(["work-outlook-old"], stale);
+		Assert.Equal([oldUid], stale);
 	}
+
+	private static string CreateUid(string sourceId, string eventId) =>
+		CalendarRules.BuildManagedUid(sourceId, eventId, new DateTime(2026, 8, 30, 10, 0, 0, DateTimeKind.Utc));
 
 	[Fact]
 	public void AllDayRangeUsesAnExclusiveEndDate()

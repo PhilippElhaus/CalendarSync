@@ -3,18 +3,11 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token, bool filterBySource)
+	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
 	{
-		if (filterBySource)
-		{
-			_logger.LogInformation("Cleaning existing events for source {SourceId}.", _sourceId);
-		}
-		else
-		{
-			_logger.LogInformation("Cleaning all existing iCloud events.");
-		}
+		_logger.LogInformation("Cleaning all existing iCloud events.");
 
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, filterBySource, token).ConfigureAwait(false);
+		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, null, token).ConfigureAwait(false);
 		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
 
 		_tray.SetDeleting();

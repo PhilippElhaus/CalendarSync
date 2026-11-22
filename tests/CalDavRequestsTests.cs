@@ -130,6 +130,32 @@ public sealed class CalDavRequestsTests
 		Assert.Equal(2, handler.Requests.Count);
 	}
 
+	[Fact]
+	public async Task CalendarListingKeepsCurrentItemsAndLimitsCleanupToTheExactSource()
+	{
+		const string sourceId = "work.ics";
+		var startUtc = new DateTime(2026, 8, 30, 10, 0, 0, DateTimeKind.Utc);
+		var currentUid = CalendarRules.BuildManagedUid(sourceId, "current", startUtc);
+		var staleUid = CalendarRules.BuildManagedUid(sourceId, "stale", startUtc);
+		var neighboringUid = CalendarRules.BuildManagedUid("work.ics-outlook-east", "neighbor", startUtc);
+		var entries = new[] { currentUid, staleUid, neighboringUid, "work.ics-legacy", "personal-event" };
+		var resources = string.Concat(entries.Select(uid => $"<response><href>/calendar/{uid}.ics</href></response>"));
+		using var handler = new SequenceHandler(new HttpResponseMessage(HttpStatusCode.MultiStatus)
+		{
+			Content = new StringContent($"<multistatus xmlns=\"DAV:\">{resources}</multistatus>")
+		});
+		using var client = new HttpClient(handler);
+
+		using var response = await CalDavRequests.SendAsync(client,
+			() => new HttpRequestMessage(new HttpMethod("PROPFIND"), "https://caldav.example.test/calendar/"),
+			"calendar listing", CancellationToken.None, NullLogger.Instance);
+		var listed = await CalendarSyncService.ReadICloudEventsAsync(response.Content, sourceId, CancellationToken.None);
+
+		Assert.Equal(2, listed.Count);
+		Assert.Contains(currentUid, listed.Keys);
+		Assert.Equal([staleUid], CalendarRules.GetStaleManagedUids(sourceId, listed.Keys, [currentUid]));
+	}
+
 	private static Task<HttpResponseMessage> SendAsync(
 		HttpClient client, HttpMethod method, bool retryVerificationAccess = false, CancellationToken token = default) =>
 		CalDavRequests.SendAsync(client,

@@ -14,9 +14,8 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl, bool filterBySource, CancellationToken token)
+	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl, string? sourceId, CancellationToken token)
 	{
-		var events = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		const string requestBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><d:propfind xmlns:d=\"DAV:\" xmlns:cs=\"http://calendarserver.org/ns/\"><d:prop><d:getetag/><cs:getctag/></d:prop></d:propfind>";
 
 		try
@@ -34,30 +33,9 @@ public partial class CalendarSyncService
 				},
 				"calendar listing",
 				token).ConfigureAwait(false);
-			var content = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-			var document = XDocument.Parse(content);
-
-			XNamespace dav = "DAV:";
-			foreach (var responseElement in document.Descendants(dav + "response"))
-			{
-				var href = responseElement.Element(dav + "href")?.Value;
-				var propStat = responseElement.Element(dav + "propstat");
-				var prop = propStat?.Element(dav + "prop");
-				var etag = prop?.Element(dav + "getetag")?.Value ?? string.Empty;
-
-				if (string.IsNullOrEmpty(href) || !href.EndsWith(".ics", StringComparison.OrdinalIgnoreCase))
-				{
-					continue;
-				}
-
-				var uid = href.Trim('/').Split('/').Last().Replace(".ics", string.Empty, StringComparison.OrdinalIgnoreCase);
-				if (filterBySource && !IsManagedUid(uid))
-				{
-					continue;
-				}
-
-				events[uid] = etag;
-			}
+			var events = await ReadICloudEventsAsync(response.Content, sourceId, token).ConfigureAwait(false);
+			_logger.LogInformation("Parsed {Count} events from PROPFIND response.", events.Count);
+			return events;
 		}
 		catch (HttpRequestException ex)
 		{
@@ -71,8 +49,35 @@ public partial class CalendarSyncService
 			EventRecorder.WriteEntry("iCloud response parse failed", EventLogEntryType.Error);
 			throw new InvalidOperationException("iCloud PROPFIND response was not valid XML.", ex);
 		}
+	}
 
-		_logger.LogInformation("Parsed {Count} events from PROPFIND response.", events.Count);
+	internal static async Task<Dictionary<string, string>> ReadICloudEventsAsync(HttpContent responseContent, string? sourceId, CancellationToken token)
+	{
+		var events = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		var content = await responseContent.ReadAsStringAsync(token).ConfigureAwait(false);
+		var document = XDocument.Parse(content);
+
+		XNamespace dav = "DAV:";
+		foreach (var responseElement in document.Descendants(dav + "response"))
+		{
+			var href = responseElement.Element(dav + "href")?.Value;
+			if (string.IsNullOrEmpty(href) || !href.EndsWith(".ics", StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			var uid = href[(href.LastIndexOf('/') + 1)..^4];
+			if (sourceId != null && !CalendarRules.IsManagedUid(sourceId, uid))
+			{
+				continue;
+			}
+
+			var propStat = responseElement.Element(dav + "propstat");
+			var prop = propStat?.Element(dav + "prop");
+			var etag = prop?.Element(dav + "getetag")?.Value ?? string.Empty;
+			events[uid] = etag;
+		}
+
 		return events;
 	}
 
@@ -106,10 +111,5 @@ public partial class CalendarSyncService
 		client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(credentials));
 		client.DefaultRequestHeaders.Add("User-Agent", "CalendarSyncService");
 		return client;
-	}
-
-	private bool IsManagedUid(string? uid)
-	{
-		return CalendarRules.IsManagedUid(_sourceId, uid);
 	}
 }

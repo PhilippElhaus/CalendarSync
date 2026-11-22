@@ -73,6 +73,14 @@ not start a second COM operation while a timed-out call is exiting. It makes no
 iCloud changes when Outlook cannot produce a complete snapshot. Run the
 [COM endurance procedure](docs/com-endurance.md) after a COM change.
 
+Startup uses the same sync as later cycles. CalendarSync preserves the remote
+description when Outlook does not supply the body. Automatic cleanup removes
+only stale events with the current UID format for the configured `SourceId`,
+after all writes pass verification. It leaves older UID formats in place. Use
+source IDs that differ even when compared without case. Review legacy copies
+before removing them. The confirmed `Full Re-Sync` command still deletes all
+events in the destination calendar.
+
 CalendarSync retries one rejected authentication request before it stops the
 cycle. An event verification read can also retry one HTTP 403 after a successful
 write. A persistent HTTP 403 is a request rejection, not a password diagnosis.

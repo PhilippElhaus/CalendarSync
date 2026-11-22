@@ -10,7 +10,7 @@ public partial class CalendarSyncService
 	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
 	{
 		var calendarUrl = BuildCalendarUrl();
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, true, token).ConfigureAwait(false);
+		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, _sourceId, token).ConfigureAwait(false);
 
 		_logger.LogInformation("Found {Count} managed iCloud events before sync.", iCloudEvents.Count);
 		_tray.SetUpdating();
