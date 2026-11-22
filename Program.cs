@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
@@ -91,8 +92,8 @@ public class Program
 		}
 		catch (Exception ex)
 		{
-			BootstrapDiagnostics.Log($"Fatal exception in Main: {ex}");
-			EventRecorder.WriteEntry($"Fatal startup error: {ex}", EventLogEntryType.Error);
+			BootstrapDiagnostics.Log($"Startup failed: {ex.GetType().Name}, code=0x{ex.HResult:X8}.");
+			EventRecorder.WriteEntry("Startup failed; see bootstrap.log", EventLogEntryType.Error);
 			try
 			{
 				MessageBox.Show(
@@ -116,7 +117,7 @@ public class Program
 						var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
 						if (!File.Exists(configPath))
 						{
-							BootstrapDiagnostics.Log($"config.json missing at {configPath}.");
+							BootstrapDiagnostics.Log("config.json is missing.");
 							EventRecorder.WriteEntry("config.json not found", EventLogEntryType.Error);
 							throw new FileNotFoundException("config.json not found in the executable directory.");
 						}
@@ -139,10 +140,11 @@ public class Program
 
 						var logger = new LoggerConfiguration()
 								.MinimumLevel.Is(serilogLevel)
+								.Enrich.FromLogContext()
 								.WriteTo.Sink(new TwoFileRollingSink(logFilePath, oldLogFilePath, 1_048_576))
 								.CreateLogger();
 
-						services.AddLogging(builder => builder.AddSerilog(logger, dispose: true));
+						services.AddLogging(builder => builder.ClearProviders().AddSerilog(logger, dispose: true));
 						BootstrapDiagnostics.Log("Services configured successfully.");
 						EventRecorder.WriteEntry("Configuration loaded", EventLogEntryType.Information);
 					});
@@ -188,11 +190,6 @@ public class Program
 	{
 		if (ex == null)
 			return;
-		try
-		{
-			Log.Fatal(ex, "Unhandled exception");
-		}
-		catch { }
 		BootstrapDiagnostics.Log($"Unhandled exception captured: type={ex.GetType().FullName}, HResult=0x{ex.HResult:X8}.");
 		EventRecorder.WriteEntry($"Unhandled exception: {ex.GetType().FullName}, HResult=0x{ex.HResult:X8}", EventLogEntryType.Error);
 	}
@@ -215,11 +212,11 @@ public class Program
 		var candidatePath = Path.Combine(BinDirectory.Value, $"{assemblyName.Name}.dll");
 		if (!File.Exists(candidatePath))
 		{
-			BootstrapDiagnostics.LogAssemblyProbe(assemblyName.Name ?? "unknown", candidatePath, false, false);
+			BootstrapDiagnostics.LogProbe("Managed", false, false);
 			return null;
 		}
 		var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(candidatePath);
-		BootstrapDiagnostics.LogAssemblyProbe(assemblyName.Name ?? "unknown", candidatePath, true, assembly != null);
+		BootstrapDiagnostics.LogProbe("Managed", true, assembly != null);
 		return assembly;
 	}
 
@@ -228,11 +225,11 @@ public class Program
 		var candidatePath = Path.Combine(BinDirectory.Value, $"{name}.dll");
 		if (!File.Exists(candidatePath))
 		{
-			BootstrapDiagnostics.LogNativeProbe(name, candidatePath, false, false);
+			BootstrapDiagnostics.LogProbe("Native", false, false);
 			return IntPtr.Zero;
 		}
 		var handle = NativeLibrary.Load(candidatePath);
-		BootstrapDiagnostics.LogNativeProbe(name, candidatePath, true, handle != IntPtr.Zero);
+		BootstrapDiagnostics.LogProbe("Native", true, handle != IntPtr.Zero);
 		return handle;
 	}
 }

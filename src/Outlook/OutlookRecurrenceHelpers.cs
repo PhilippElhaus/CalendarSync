@@ -22,7 +22,7 @@ public partial class CalendarSyncService
 		}
 	}
 
-	private RecurrencePattern? BuildRecurrenceRule(Outlook.RecurrencePattern pattern, string? subject, bool seriesAllDay)
+	private RecurrencePattern? BuildRecurrenceRule(Outlook.RecurrencePattern pattern, bool seriesAllDay)
 	{
 		var rule = new RecurrencePattern
 		{
@@ -55,7 +55,7 @@ public partial class CalendarSyncService
 			ConfigureYearlyNthRule(rule, pattern.MonthOfYear, pattern.DayOfWeekMask, pattern.Instance);
 			break;
 			default:
-			_logger.LogWarning("Unsupported recurrence type for event '{Subject}'. Skipping.", subject);
+			_logger.LogWarning("Outlook recurrence type is unsupported. Snapshot is incomplete.");
 			return null;
 		}
 
@@ -193,7 +193,6 @@ public partial class CalendarSyncService
 
 	private bool ProcessRecurrenceExceptions(
 				Outlook.RecurrencePattern pattern,
-				Outlook.AppointmentItem appt,
 				DateTime from,
 				DateTime to,
 				List<OccurrenceInfo> results,
@@ -220,7 +219,6 @@ public partial class CalendarSyncService
 
 					if (recurrenceException.Deleted)
 					{
-						_logger.LogDebug("Skipping deleted recurrence occurrence for '{Subject}' at {OriginalDate}.", appt.Subject, recurrenceException.OriginalDate);
 						continue;
 					}
 
@@ -233,13 +231,22 @@ public partial class CalendarSyncService
 
 					token.ThrowIfCancellationRequested();
 
-					var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(exceptionItem.Start, exceptionItem.StartUTC, $"exception '{appt.Subject}' start");
-					var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(exceptionItem.End, exceptionItem.EndUTC, $"exception '{appt.Subject}' end");
-
-					if (exStartLocal >= from && exStartLocal <= to)
+					if (exceptionItem.MeetingStatus is Outlook.OlMeetingStatus.olMeetingCanceled or Outlook.OlMeetingStatus.olMeetingReceivedAndCanceled)
 					{
-						var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, exceptionItem.AllDayEvent);
-						var body = ReadOutlookBodyIfEnabled(exceptionItem, $"exception '{appt.Subject}'");
+						continue;
+					}
+					var allDay = exceptionItem.AllDayEvent;
+					var (exStartLocal, exStartUtc) = NormalizeOutlookTimes(exceptionItem.Start, exceptionItem.StartUTC, allDay);
+					var (exEndLocal, exEndUtc) = NormalizeOutlookTimes(exceptionItem.End, exceptionItem.EndUTC, allDay);
+
+					if (CalendarRules.OverlapsWindow(exStartLocal, exEndLocal, from, to))
+					{
+						if (results.Count >= MaxOutlookItemsPerSnapshot)
+						{
+							return false;
+						}
+						var exAllDay = DetermineAllDay(exStartLocal, exEndLocal, allDay);
+						var body = ReadOutlookBodyIfEnabled(exceptionItem);
 						results.Add(new OccurrenceInfo(
 								exStartLocal,
 								exEndLocal,
@@ -250,7 +257,6 @@ public partial class CalendarSyncService
 								body.Body,
 								exceptionItem.Location,
 								body.WasRead));
-						_logger.LogDebug("Processed one modified recurrence occurrence at {Start}.", exStartLocal);
 					}
 				}
 				catch (OperationCanceledException)
@@ -260,7 +266,7 @@ public partial class CalendarSyncService
 				catch (COMException ex)
 				{
 					isComplete = false;
-					_logger.LogDebug(ex, "Skipping recurrence exception for '{Subject}' because Outlook reported the instance is unavailable.", appt.Subject);
+					_logger.LogDebug("Outlook recurrence exception unavailable. Code=0x{Code:X8}.", ex.HResult);
 				}
 				finally
 				{
@@ -279,7 +285,6 @@ public partial class CalendarSyncService
 
 	private bool AddCalculatedOccurrences(
 			List<OccurrenceInfo> results,
-			Outlook.AppointmentItem appt,
 			IEnumerable<Occurrence> occurrences,
 			HashSet<DateTime> skipDates,
 			TimeSpan baseDuration,
@@ -318,68 +323,31 @@ public partial class CalendarSyncService
 					var desiredStartLocal = DateTime.SpecifyKind(startLocal.Date.Add(baseStartLocal.TimeOfDay), DateTimeKind.Unspecified);
 					var desiredEndLocal = desiredStartLocal + baseLocalDuration;
 
-					if (Math.Abs((startLocal - desiredStartLocal).TotalMinutes) > TimezoneSanityToleranceMinutes)
-					{
-						_logger.LogDebug(
-							"Adjusted recurring occurrence for '{Subject}' on {Date}: expected {Expected:o} but computed {Computed:o}.",
-							appt.Subject,
-							desiredStartLocal.Date,
-							desiredStartLocal,
-							startLocal);
-					}
-
-					var invalidTime = _sourceTimeZone.IsInvalidTime(desiredStartLocal) || _sourceTimeZone.IsInvalidTime(desiredEndLocal);
-					var ambiguousTime = _sourceTimeZone.IsAmbiguousTime(desiredStartLocal) || _sourceTimeZone.IsAmbiguousTime(desiredEndLocal);
-
-					if (invalidTime)
-					{
-						_logger.LogWarning(
-							"Skipping recurring occurrence for '{Subject}' on {Date} because local window {DesiredStart:o}-{DesiredEnd:o} is invalid in timezone {TimeZone}.",
-							appt.Subject,
-							desiredStartLocal.Date,
-							desiredStartLocal,
-							desiredEndLocal,
-							_sourceTimeZone.Id);
-						continue;
-					}
-
-					if (ambiguousTime)
-					{
-						_logger.LogWarning(
-							"Recurring occurrence for '{Subject}' on {Date} has ambiguous local window {DesiredStart:o}-{DesiredEnd:o} in timezone {TimeZone}. Converting with the system default offset.",
-							appt.Subject,
-							desiredStartLocal.Date,
-							desiredStartLocal,
-							desiredEndLocal,
-							_sourceTimeZone.Id);
-					}
-
 					startLocal = desiredStartLocal;
 					endLocal = desiredEndLocal;
 				}
 
 				if (_sourceTimeZone.IsInvalidTime(startLocal) || _sourceTimeZone.IsInvalidTime(endLocal))
 				{
-					_logger.LogWarning(
-						"Skipping recurring occurrence for '{Subject}' because local window {Start:o}-{End:o} is invalid in timezone {TimeZone}.",
-						appt.Subject,
-						startLocal,
-						endLocal,
-						_sourceTimeZone.Id);
-					continue;
+					_logger.LogWarning("Outlook recurrence falls in a time-zone gap. Snapshot is incomplete.");
+					return false;
 				}
 
-				var startUtc = ConvertFromSourceLocalToUtc(startLocal, $"recurrence '{appt.Subject}' occurrence start");
-				var endUtc = ConvertFromSourceLocalToUtc(endLocal, $"recurrence '{appt.Subject}' occurrence end");
+				if (results.Count >= MaxOutlookItemsPerSnapshot)
+				{
+					return false;
+				}
+				var startUtc = ConvertFromSourceLocalToUtc(startLocal);
+				var endUtc = ConvertFromSourceLocalToUtc(endLocal);
 				var occAllDay = DetermineAllDay(startLocal, endLocal, seriesAllDay);
 				results.Add(new OccurrenceInfo(startLocal, endLocal, startUtc, endUtc, occAllDay, null, null, null, false));
 			}
 
 			return true;
 		}
-		catch (EvaluationOutOfRangeException ex)
+		catch (EvaluationOutOfRangeException)
 		{
-			_logger.LogWarning(ex, "Stopped recurrence expansion for '{Subject}' after Ical.Net reached its evaluation range.", appt.Subject);
+			_logger.LogWarning("Outlook recurrence reached the evaluation limit. Snapshot is incomplete.");
 			return false;
 		}
 	}

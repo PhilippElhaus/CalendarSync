@@ -36,7 +36,7 @@ public partial class CalendarSyncService
 				}
 				else
 				{
-					_logger.LogDebug("Starting Outlook using resolved path '{Executable}'.", executable);
+					_logger.LogDebug("Starting Outlook using the registered executable.");
 				}
 
 				try
@@ -45,7 +45,7 @@ public partial class CalendarSyncService
 				}
 				catch (Exception ex)
 				{
-					_logger.LogWarning(ex, "Unable to start Outlook using '{Executable}'.", executable);
+					_logger.LogWarning("Unable to start Outlook. Code=0x{Code:X8}.", ex.HResult);
 				}
 			}
 
@@ -97,7 +97,7 @@ public partial class CalendarSyncService
 				return value;
 			}
 
-			_logger.LogWarning("Outlook executable path '{Path}' from registry does not exist.", value);
+			_logger.LogWarning("The registered Outlook executable was not found.");
 		}
 		catch (Exception ex)
 		{

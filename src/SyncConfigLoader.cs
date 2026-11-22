@@ -48,9 +48,10 @@ internal static partial class SyncConfigLoader
 		ValidatePathSegment(config.WorkCalendarId!, nameof(config.WorkCalendarId));
 
 		if (!Uri.TryCreate(config.ICloudCalDavUrl, UriKind.Absolute, out var calDavUri) ||
-			!calDavUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+			!calDavUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+			calDavUri.UserInfo.Length != 0 || calDavUri.Query.Length != 0 || calDavUri.Fragment.Length != 0)
 		{
-			throw new InvalidDataException("ICloudCalDavUrl must be an absolute HTTPS URL.");
+			throw new InvalidDataException("ICloudCalDavUrl must be an absolute HTTPS URL without user info, query, or fragment.");
 		}
 
 		if (!string.IsNullOrWhiteSpace(config.SourceId) && !SafeSourceIdRegex().IsMatch(config.SourceId))
@@ -65,15 +66,15 @@ internal static partial class SyncConfigLoader
 		ValidateRange(config.RecurrenceExpansionDaysFuture, 0, MaxSyncWindowDays, nameof(config.RecurrenceExpansionDaysFuture));
 		ValidateRange(config.RecurrenceExpansionDaysPast, 0, MaxSyncWindowDays, nameof(config.RecurrenceExpansionDaysPast));
 
-		if (!Enum.TryParse<LogEventLevel>(config.LogLevel, true, out _))
+		if (!Enum.TryParse<LogEventLevel>(config.LogLevel, true, out var level) || !Enum.IsDefined(level))
 		{
-			throw new InvalidDataException($"LogLevel '{config.LogLevel}' is not valid.");
+			throw new InvalidDataException("LogLevel is not valid.");
 		}
 
 		if (!string.IsNullOrWhiteSpace(config.OutlookBodySyncMode) &&
-			!Enum.TryParse<OutlookBodySyncMode>(config.OutlookBodySyncMode, true, out _))
+			(!Enum.TryParse<OutlookBodySyncMode>(config.OutlookBodySyncMode, true, out var mode) || !Enum.IsDefined(mode)))
 		{
-			throw new InvalidDataException($"OutlookBodySyncMode '{config.OutlookBodySyncMode}' is not valid.");
+			throw new InvalidDataException("OutlookBodySyncMode is not valid.");
 		}
 
 		ValidateTimeZone(config.SourceTimeZoneId, nameof(config.SourceTimeZoneId));
@@ -98,6 +99,10 @@ internal static partial class SyncConfigLoader
 
 	private static void ValidatePathSegment(string value, string name)
 	{
+		if (value is "." or ".." || value.Contains('%'))
+		{
+			throw new InvalidDataException($"{name} must be one unescaped CalDAV path segment.");
+		}
 		if (value.IndexOfAny(['/', '\\', '?', '#']) >= 0 || value.Any(char.IsWhiteSpace))
 		{
 			throw new InvalidDataException($"{name} must be one unescaped CalDAV path segment.");

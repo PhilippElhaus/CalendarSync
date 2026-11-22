@@ -28,14 +28,14 @@ public sealed class TrayIconManager : IDisposable
 
 		_menu = new ContextMenuStrip();
 		var logsItem = new ToolStripMenuItem("Logs");
-		logsItem.Click += (_, _) => OpenLatestLog();
+		logsItem.Click += (_, _) => RunNotification(OpenLatestLog);
 		_menu.Items.Add(logsItem);
 
 		_fullResyncItem = new ToolStripMenuItem("Full Re-Sync");
 		_fullResyncItem.Click += (_, _) =>
 		{
 			var confirm = MessageBox.Show(
-				"This will delete all events from the iCloud calendar and start a fresh sync. Continue?",
+				"This will attempt to delete all .ics resources in the destination, including items from other sources. If a request fails, some resources may already be gone. Continue?",
 				"Confirm Full Re-Sync",
 				MessageBoxButtons.YesNo,
 				MessageBoxIcon.Warning);
@@ -128,7 +128,7 @@ public sealed class TrayIconManager : IDisposable
 		{
 			try
 			{
-				_dispatcher.BeginInvoke(action);
+				_dispatcher.BeginInvoke(() => RunNotification(action));
 			}
 			catch (InvalidOperationException)
 			{
@@ -136,8 +136,14 @@ public sealed class TrayIconManager : IDisposable
 			return;
 		}
 
-		action();
+		RunNotification(action);
 	}
+
+	private static void RunNotification(Action action)
+	{
+		try { action(); }
+		catch { }
+}
 
 	private void UpdateTextCore(string text)
 	{
@@ -147,14 +153,14 @@ public sealed class TrayIconManager : IDisposable
 	private static void OpenLatestLog()
 	{
 		var dir = AppDomain.CurrentDomain.BaseDirectory;
-		var latest = Directory.GetFiles(dir, "sync*.log")
-			.Select(path => new FileInfo(path))
-			.OrderByDescending(file => file.LastWriteTimeUtc)
-			.FirstOrDefault();
-
-		if (latest != null)
+		foreach (var name in new[] { "sync.log", "sync.log.old", "bootstrap.log" })
 		{
-			Process.Start(new ProcessStartInfo(latest.FullName) { UseShellExecute = true });
+			var path = Path.Combine(dir, name);
+			if (File.Exists(path))
+			{
+				using var process = Process.Start(new ProcessStartInfo("notepad.exe") { UseShellExecute = false, ArgumentList = { path } });
+				return;
+			}
 		}
 	}
 

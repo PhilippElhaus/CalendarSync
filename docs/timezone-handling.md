@@ -1,7 +1,23 @@
-# Timezone handling rationale
+# Calendar time handling
 
-The sync now treats Outlook and iCloud calendars with explicit source and target timezones instead of relying on the host operating system. Optional `SourceTimeZoneId` and `TargetTimeZoneId` values in `config.json` allow overriding the defaults when Outlook runs in a different region than the machine or when iCloud should display in a different zone. When the fields are omitted the code falls back to `TimeZoneInfo.Local` for both roles.
+- CalendarSync calculates one source-local day window for each scan. It includes
+  today and the configured calendar days on each side. The end is exclusive.
+  The Outlook date filter uses a wider interval to allow for differences between
+  Outlook display time and source time. The final selection uses the source window.
+- For timed events, Outlook UTC is authoritative. CalendarSync converts it to
+  the configured source time zone for the window check. If Outlook UTC is
+  absent, CalendarSync converts the Outlook wall-clock time in the source zone.
+  Timed CalDAV data uses UTC. `TargetTimeZoneId` does not change the payload.
+- An explicitly all-day event keeps its Outlook local dates. The exclusive end
+  date does not shift when the source or target time zone is different. CalendarSync
+  keeps the existing near-midnight heuristic for events not flagged as all-day.
+- Recurrence expansion uses source-local wall-clock time. When Outlook does not
+  supply the occurrence UTC, an ambiguous local time uses the system default
+  offset. A missing or invalid time, including a time in a DST gap, can make the
+  snapshot incomplete. An incomplete snapshot does not change iCloud.
+- CalDAV verification compares timed values as absolute instants to the second.
+  It compares all-day values as dates. Floating times cannot verify a timed copy.
 
-Outlook appointment data is normalised through `NormalizeOutlookTimes`, which now treats the UTC values exposed by Outlook (`StartUTC`/`EndUTC`) as the single source of truth. Those timestamps are converted into the configured source timezone to build stable “local” values. When Outlook omits UTC values, the service falls back to converting the provided local timestamp via the configured source timezone. Any inconsistencies trigger warnings and are corrected before writing to iCloud. All conversions back to UTC go through `ConvertFromSourceLocalToUtc`, while `ConvertUtcToSourceLocal` is used to derive local display values when expanding recurrences. The helper `EnsureEventConsistency` runs over every item before it is queued for upload and splits all-day multi-day events using the same timezone-aware calculations.
-
-For recurring events the service rebuilds the calendar series using source-local wall-clock times, evaluates exceptions with normalised start/end values and bounds iCal.Net enumeration to the configured sync window before converting each occurrence back to UTC. This keeps recurring meetings at their Outlook local time across DST changes, avoids unbounded RRULE enumeration, and still produces UTC payloads for iCloud. Every payload is verified with `CheckTargetAlignment` to ensure that converting the UTC timestamps to the target timezone would not shift the local wall-clock time unexpectedly when the source and target zones match. These steps prevent previously observed offsets when both calendars operate in CET/CEST and make the conversion robust across differing source/target zones.
+Use the [COM endurance procedure](com-endurance.md) before releasing changes
+that affect Outlook reads. Offline tests do not establish how an installed
+Outlook provider exposes recurring masters or exceptions.

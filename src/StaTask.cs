@@ -35,10 +35,10 @@ public static class StaTask
 				registration.Dispose();
 			}
 		});
-		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
 		try
 		{
+			thread.SetApartmentState(ApartmentState.STA);
 			thread.Start();
 		}
 		catch
@@ -49,7 +49,9 @@ public static class StaTask
 		return tcs.Task;
 	}
 
-	public static Task<T> Run<T>(Func<T> func, CancellationToken token)
+	public static Task<T> Run<T>(Func<T> func, CancellationToken token) => Run(func, token, null);
+
+	internal static Task<T> Run<T>(Func<T> func, CancellationToken token, Action? canceledBeforeStart)
 	{
 		var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
 		var registration = token.Register(() => tcs.TrySetCanceled(token));
@@ -57,7 +59,11 @@ public static class StaTask
 		{
 			try
 			{
-				token.ThrowIfCancellationRequested();
+				if (token.IsCancellationRequested)
+				{
+					canceledBeforeStart?.Invoke();
+					throw new OperationCanceledException(token);
+				}
 				var result = func();
 				tcs.TrySetResult(result);
 			}
@@ -78,10 +84,10 @@ public static class StaTask
 				registration.Dispose();
 			}
 		});
-		thread.SetApartmentState(ApartmentState.STA);
 		thread.IsBackground = true;
 		try
 		{
+			thread.SetApartmentState(ApartmentState.STA);
 			thread.Start();
 		}
 		catch

@@ -8,7 +8,7 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService : BackgroundService
 {
-	private enum SyncCycleOutcome
+	internal enum SyncCycleOutcome
 	{
 		Succeeded,
 		Failed,
@@ -17,9 +17,10 @@ public partial class CalendarSyncService : BackgroundService
 	}
 
 	private readonly SyncConfig _config;
-	private readonly ILogger<CalendarSyncService> _logger;
-	private readonly TrayIconManager _tray;
-	private const double TimezoneSanityToleranceMinutes = 1;
+	private readonly ILogger _logger;
+	private readonly TrayIconManager? _tray;
+	private readonly Func<CancellationToken, Task<OutlookSnapshot>> _readSnapshot;
+	private readonly Func<HttpClient> _createClient;
 	private readonly TimeSpan _initialWait;
 	private readonly TimeSpan _syncInterval;
 	private readonly string _sourceId;
@@ -40,10 +41,18 @@ public partial class CalendarSyncService : BackgroundService
 	private static extern int GetActiveObject(ref Guid rclsid, IntPtr pvReserved, [MarshalAs(UnmanagedType.IUnknown)] out object? ppunk);
 
 	public CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger, TrayIconManager tray)
+		: this(config, logger, null, null, tray ?? throw new ArgumentNullException(nameof(tray)))
+	{
+	}
+
+	internal CalendarSyncService(SyncConfig config, ILogger<CalendarSyncService> logger,
+		Func<CancellationToken, Task<OutlookSnapshot>>? readSnapshot, Func<HttpClient>? createClient, TrayIconManager? tray = null)
 	{
 		_config = config ?? throw new ArgumentNullException(nameof(config));
-		_logger = logger ?? throw new ArgumentNullException(nameof(logger));
-		_tray = tray ?? throw new ArgumentNullException(nameof(tray));
+		_logger = new BestEffortLogger(logger ?? throw new ArgumentNullException(nameof(logger)));
+		_tray = tray;
+		_readSnapshot = readSnapshot ?? FetchOutlookEventsAsync;
+		_createClient = createClient ?? CreateHttpClient;
 		_initialWait = TimeSpan.FromSeconds(_config.InitialWaitSeconds);
 		_syncInterval = TimeSpan.FromMinutes(_config.SyncIntervalMinutes);
 		_sourceId = _config.SourceId ?? string.Empty;
@@ -53,10 +62,7 @@ public partial class CalendarSyncService : BackgroundService
 
 		if (!_sourceTimeZone.Id.Equals(_targetTimeZone.Id, StringComparison.OrdinalIgnoreCase))
 		{
-			_logger.LogInformation(
-				"Source timezone {Source} and target timezone {Target} differ; synchronizing via UTC conversions.",
-				_sourceTimeZone.Id,
-				_targetTimeZone.Id);
+			_logger.LogInformation("Configured source and target time zones differ; timed events use UTC.");
 		}
 	}
 
@@ -102,86 +108,117 @@ public partial class CalendarSyncService : BackgroundService
 		}
 	}
 
-	private async Task<SyncCycleOutcome> PerformSyncAsync(CancellationToken token, bool fullResync)
+	internal async Task<SyncCycleOutcome> PerformSyncAsync(CancellationToken token, bool fullResync)
 	{
 		var cycleId = Guid.NewGuid().ToString("N")[..8];
 		var stopwatch = Stopwatch.StartNew();
 		var sourceEventCount = 0;
 		var outcome = SyncCycleOutcome.Failed;
+		var metrics = new CycleMetrics();
+		var reason = "None";
+		int? httpStatus = null;
 		HttpStatusCode? accessFailureStatus = null;
 		_hadSuccessfulCalDavRequest = false;
 		using var scope = _logger.BeginScope(new Dictionary<string, object> { ["SyncCycleId"] = cycleId });
 
 		EventRecorder.WriteEntry(fullResync ? "Full re-sync started" : "Sync started", EventLogEntryType.Information);
-		_tray.SetUpdating();
+		_tray?.SetUpdating();
 		_logger.LogInformation("Starting {SyncKind} cycle {CycleId}.", fullResync ? "full re-sync" : "sync", cycleId);
 
 		try
 		{
-			var snapshot = await FetchOutlookEventsAsync(token).ConfigureAwait(false);
+			var snapshot = await _readSnapshot(token).ConfigureAwait(false);
+			token.ThrowIfCancellationRequested();
 			sourceEventCount = snapshot.Events.Count;
+			metrics.FailedItems = snapshot.FailedItemCount;
+			metrics.HitItemLimit = snapshot.HitItemLimit;
+			metrics.BodyNotRead = snapshot.Events.Values.Count(dto => !dto.BodyWasRead);
 
 			if (!snapshot.IsComplete)
 			{
+				reason = "SnapshotIncomplete";
 				_logger.LogError(
 					"Outlook snapshot is incomplete. FailedItems={FailedItems}, HitItemLimit={HitItemLimit}. No iCloud changes were made.",
 					snapshot.FailedItemCount,
 					snapshot.HitItemLimit);
 				EventRecorder.WriteEntry("Outlook snapshot incomplete; iCloud mutation skipped", EventLogEntryType.Error);
-				_tray.SetFailed("Outlook read incomplete; retry pending");
+				_tray?.SetFailed("Outlook read incomplete; retry pending");
 				return SyncCycleOutcome.Failed;
 			}
 
-			await ApplySnapshotToICloudAsync(snapshot.Events, fullResync, token).ConfigureAwait(false);
+			await ApplySnapshotToICloudAsync(snapshot.Events, fullResync, metrics, token).ConfigureAwait(false);
 
 			_lastSuccessfulSync = DateTimeOffset.Now;
 			outcome = SyncCycleOutcome.Succeeded;
 			EventRecorder.WriteEntry(fullResync ? "Full re-sync finished" : "Sync finished", EventLogEntryType.Information);
-			_tray.SetIdle($"Idle - last sync {_lastSuccessfulSync:HH:mm}");
+			_tray?.SetIdle($"Idle - last sync {_lastSuccessfulSync:HH:mm}");
 			return outcome;
 		}
 		catch (CalDavAccessException ex)
 		{
 			accessFailureStatus = ex.StatusCode;
-			_logger.LogError(ex,
+			reason = "AccessRejected";
+			httpStatus = (int)ex.StatusCode!.Value;
+			_logger.LogError(
 				"iCloud rejected {Operation} with HTTP {Status}. This cycle stopped; the next cycle will retry.",
 				ex.Operation, (int)ex.StatusCode!.Value);
 			EventRecorder.WriteEntry($"iCloud request rejected with HTTP {(int)ex.StatusCode.Value}", EventLogEntryType.Error);
-			_tray.SetFailed($"iCloud HTTP {(int)ex.StatusCode.Value}; retry pending");
+			_tray?.SetFailed($"iCloud HTTP {(int)ex.StatusCode.Value}; retry pending");
 			return SyncCycleOutcome.Failed;
 		}
-		catch (OutlookOperationInProgressException ex)
+		catch (OutlookOperationInProgressException)
 		{
 			outcome = SyncCycleOutcome.Skipped;
-			_logger.LogWarning(ex, "Previous Outlook operation is still running. Skipping this sync cycle.");
-			_tray.SetFailed("Outlook is still busy; retry pending");
+			reason = "OutlookBusy";
+			_logger.LogWarning("Previous Outlook operation is still running. Skipping this sync cycle.");
+			_tray?.SetFailed("Outlook is still busy; retry pending");
 			return outcome;
 		}
-		catch (OperationCanceledException ex)
+		catch (OperationCanceledException)
 		{
 			outcome = SyncCycleOutcome.Canceled;
 			if (_serviceStoppingToken.IsCancellationRequested)
 			{
+				reason = "Stopping";
 				_logger.LogInformation("Sync canceled because the service is stopping.");
 			}
 			else if (IsCurrentOperationCanceled())
 			{
+				reason = "ManualRequest";
 				_logger.LogInformation("Sync canceled in preparation for a manual full re-sync.");
+			}
+			else if (!token.IsCancellationRequested)
+			{
+				outcome = SyncCycleOutcome.Failed;
+				reason = "OutlookTimeout";
+				_logger.LogError("Outlook operation timed out.");
+				EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
+				_tray?.SetFailed("Outlook timed out; retry pending");
 			}
 			else
 			{
-				_logger.LogError(ex, "Outlook operation timed out.");
-				EventRecorder.WriteEntry("Outlook operation timed out", EventLogEntryType.Error);
-				_tray.SetFailed("Outlook timed out; retry pending");
+				reason = "Canceled";
 			}
 
 			return outcome;
 		}
 		catch (Exception ex)
 		{
-			_logger.LogError(ex, "Error during sync processing. No stale-event deletion will follow this failure.");
+			var requestError = ex as HttpRequestException;
+			httpStatus = (int?)requestError?.StatusCode;
+			reason = ex switch
+			{
+				CalDavDataException error => error.Reason,
+				CalDavTimeoutException => "CalDavTimeout",
+				HttpRequestException { StatusCode: HttpStatusCode.PreconditionFailed } => "PreconditionFailed",
+				HttpRequestException { StatusCode: not null } => "HttpRejected",
+				HttpRequestException => "TransportOrResponseBuffer",
+				COMException => "OutlookComFailure",
+				_ => "UnexpectedFailure"
+			};
+			_logger.LogError("Sync stopped at {Stage}: {Reason}; HTTP status={HttpStatus}.", metrics.Stage, reason, httpStatus);
 			EventRecorder.WriteEntry("Sync failed", EventLogEntryType.Error);
-			_tray.SetFailed("Last sync failed; see log");
+			_tray?.SetFailed("Last sync failed; see log");
 			return SyncCycleOutcome.Failed;
 		}
 		finally
@@ -189,35 +226,52 @@ public partial class CalendarSyncService : BackgroundService
 			stopwatch.Stop();
 			if (_authenticationNotice.RecordCycle(accessFailureStatus, _hadSuccessfulCalDavRequest, DateTimeOffset.UtcNow))
 			{
-				_tray.ShowError("CalendarSync",
+				_tray?.ShowError("CalendarSync",
 					"iCloud repeatedly rejected authentication (HTTP 401). " +
 					"No iCloud request succeeded in these cycles. Check the account and app-specific password if this continues.");
 			}
 
-			_logger.LogInformation(
-				"Sync cycle {CycleId} completed with outcome {Outcome} in {ElapsedMs} ms. SourceEvents={SourceEvents}, LastSuccess={LastSuccess}.",
-				cycleId,
-				outcome,
-				stopwatch.ElapsedMilliseconds,
-				sourceEventCount,
-				_lastSuccessfulSync);
+			_logger.Log(outcome == SyncCycleOutcome.Failed ? LogLevel.Warning : LogLevel.Information,
+				"SyncCycle Schema={Schema} CycleId={CycleId} FullResync={FullResync} Outcome={Outcome} Stage={Stage} Reason={Reason} HttpStatus={HttpStatus} ElapsedMs={ElapsedMs} SourceEvents={SourceEvents} FailedItems={FailedItems} HitItemLimit={HitItemLimit} BodyNotRead={BodyNotRead} Listed={Listed} Unchanged={Unchanged} Written={Written} Verified={Verified} StaleCandidates={StaleCandidates} OwnershipSkipped={OwnershipSkipped} Deleted={Deleted} WipeListed={WipeListed} WipeDeleted={WipeDeleted}.",
+				1, cycleId, fullResync, outcome, metrics.Stage, reason, httpStatus, stopwatch.ElapsedMilliseconds,
+				sourceEventCount, metrics.FailedItems, metrics.HitItemLimit, metrics.BodyNotRead, metrics.Listed, metrics.Unchanged, metrics.Written,
+				metrics.Verified, metrics.StaleCandidates, metrics.OwnershipSkipped, metrics.Deleted, metrics.WipeListed, metrics.WipeDeleted);
 		}
 	}
 
 	private async Task ApplySnapshotToICloudAsync(
 		Dictionary<string, OutlookEventDto> outlookEvents,
 		bool fullResync,
+		CycleMetrics metrics,
 		CancellationToken token)
 	{
-		using var client = CreateHttpClient();
+		using var client = _createClient();
 
 		if (fullResync)
 		{
 			_logger.LogInformation("Complete Outlook snapshot obtained. Starting requested full iCloud wipe.");
-			await WipeICloudCalendarAsync(client, BuildCalendarUrl(), token).ConfigureAwait(false);
+			await WipeICloudCalendarAsync(client, new Uri(BuildCalendarUrl()), metrics, token).ConfigureAwait(false);
 		}
 
-		await SyncWithICloudAsync(client, outlookEvents, token).ConfigureAwait(false);
+		await SyncWithICloudAsync(client, outlookEvents, metrics, token).ConfigureAwait(false);
+		metrics.Stage = "Complete";
+	}
+
+	private sealed class CycleMetrics
+	{
+		internal string Stage = "Snapshot";
+		internal int FailedItems;
+		internal bool HitItemLimit;
+		internal int BodyNotRead;
+		internal int Listed;
+		internal int Unchanged;
+		internal int Written;
+		internal int Verified;
+		internal int StaleCandidates;
+		internal int OwnershipSkipped;
+		internal int Deleted;
+		internal int WipeListed;
+		internal int WipeDeleted;
 	}
 
 	public async Task TriggerFullResyncAsync()

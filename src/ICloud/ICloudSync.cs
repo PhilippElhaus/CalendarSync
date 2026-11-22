@@ -1,102 +1,111 @@
 using Ical.Net;
 using Ical.Net.Serialization;
-using Microsoft.Extensions.Logging;
+using System.Net;
 using System.Text;
 
 namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CancellationToken token)
+	private async Task SyncWithICloudAsync(HttpClient client, Dictionary<string, OutlookEventDto> outlookEvents, CycleMetrics metrics, CancellationToken token)
 	{
-		var calendarUrl = BuildCalendarUrl();
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, _sourceId, token).ConfigureAwait(false);
+		var calendarUri = new Uri(BuildCalendarUrl());
+		metrics.Stage = "Listing";
+		var remote = await GetICloudEventsAsync(client, calendarUri, _sourceId, token).ConfigureAwait(false);
+		metrics.Listed = remote.Count;
+		_tray?.SetUpdating();
 
-		_logger.LogInformation("Found {Count} managed iCloud events before sync.", iCloudEvents.Count);
-		_tray.SetUpdating();
-
-		var total = outlookEvents.Count;
 		var done = 0;
-
 		foreach (var (uid, dto) in outlookEvents)
 		{
 			token.ThrowIfCancellationRequested();
-			done++;
-			if (total > 0)
+			_tray?.UpdateText($"Updating... {++done}/{outlookEvents.Count}");
+			metrics.Stage = "Compare";
+			remote.TryGetValue(uid, out var resource);
+			var eventUri = resource?.Uri ?? new Uri(calendarUri, $"{Uri.EscapeDataString(uid)}.ics");
+			var desired = CalendarRules.CreateCalendarEvent(dto, uid, _tag);
+			if (resource != null)
 			{
-				_tray.UpdateText($"Updating... {done}/{total} ({done * 100 / total}%)");
-			}
-
-			var eventUrl = $"{calendarUrl}{uid}.ics";
-			var dtoForWrite = dto;
-			if (!dto.BodyWasRead && iCloudEvents.ContainsKey(uid))
-			{
-				var existingDescription = await GetICloudEventDescriptionAsync(client, eventUrl, token).ConfigureAwait(false);
-				dtoForWrite = dto with { Body = existingDescription };
-			}
-
-			var calEvent = CreateCalendarEvent(dtoForWrite, uid);
-			var calendar = new Calendar { Events = { calEvent } };
-			var serializer = new CalendarSerializer();
-			var newIcs = serializer.SerializeToString(calendar) ?? string.Empty;
-
-			using (await SendCalDavAsync(
-				client,
-				() => new HttpRequestMessage(HttpMethod.Put, eventUrl)
+				if (!string.Equals(resource.Name, uid, StringComparison.Ordinal))
 				{
-					Content = new StringContent(newIcs, Encoding.UTF8, "text/calendar")
-				},
-				"event upsert",
-				token).ConfigureAwait(false))
-			{
-			}
-
-			_logger.LogDebug("Synced iCloud event UID {Uid}.", uid);
-			var verified = await VerifyICloudEventAsync(client, eventUrl, dto, token).ConfigureAwait(false);
-			if (!verified)
-			{
-				var corrected = await AttemptICloudCorrectionAsync(client, eventUrl, newIcs, dto, token).ConfigureAwait(false);
-				if (!corrected)
+					throw new CalDavDataException("EventNameMismatch");
+				}
+				var existing = await ReadRemoteEventAsync(client, eventUri, uid, resource.ETag, false, token).ConfigureAwait(false);
+				if (!dto.BodyWasRead)
 				{
-					throw new InvalidDataException($"iCloud event verification failed after correction for UID {uid}.");
+					desired.Description = existing.Description ?? string.Empty;
+				}
+				if (MatchesEvent(desired, existing))
+				{
+					metrics.Unchanged++;
+					continue;
 				}
 			}
-		}
 
-		if (total > 0)
-		{
-			_tray.UpdateText($"Updating... {total}/{total} (100%)");
-		}
-
-		// Delete only after a complete Outlook snapshot and every desired event was written and verified.
-		var staleUids = CalendarRules.GetStaleManagedUids(_sourceId, iCloudEvents.Keys, outlookEvents.Keys);
-
-		if (staleUids.Count == 0)
-		{
-			_logger.LogInformation("No stale iCloud events detected after successful upserts.");
-			return;
-		}
-
-		_logger.LogInformation("Deleting {Count} stale iCloud events after successful upserts.", staleUids.Count);
-		_tray.SetDeleting();
-		var deleted = 0;
-
-		foreach (var uid in staleUids)
-		{
-			token.ThrowIfCancellationRequested();
-			deleted++;
-			_tray.UpdateText($"Deleting... {deleted}/{staleUids.Count} ({deleted * 100 / staleUids.Count}%)");
-			var deleteUrl = $"{calendarUrl}{uid}.ics";
-
-			using (await SendCalDavAsync(
-				client,
-				() => new HttpRequestMessage(HttpMethod.Delete, deleteUrl),
-				"stale event deletion",
-				token).ConfigureAwait(false))
+			metrics.Stage = "Upsert";
+			var calendar = new Calendar { Events = { desired } };
+			var payload = new CalendarSerializer().SerializeToString(calendar);
+			if (string.IsNullOrEmpty(payload))
 			{
+				throw new CalDavDataException("EventSerializationFailed");
 			}
+			using var response = await SendCalDavAsync(client, () =>
+			{
+				var request = new HttpRequestMessage(HttpMethod.Put, eventUri)
+				{
+					Content = new StringContent(payload, Encoding.UTF8, "text/calendar")
+				};
+				if (resource == null)
+				{
+					request.Headers.IfNoneMatch.Add(System.Net.Http.Headers.EntityTagHeaderValue.Any);
+				}
+				else
+				{
+					request.Headers.IfMatch.Add(resource.ETag);
+				}
+				return request;
+			}, "event upsert", token).ConfigureAwait(false);
+			if (response.StatusCode is not (HttpStatusCode.Created or HttpStatusCode.NoContent or HttpStatusCode.OK))
+			{
+				throw new CalDavDataException("WriteNotConfirmed");
+			}
+			metrics.Written++;
 
-			_logger.LogDebug("Deleted stale iCloud event UID {Uid}.", uid);
+			metrics.Stage = "Verify";
+			var tag = IsStrongTag(response.Headers.ETag) ? response.Headers.ETag : null;
+			var verified = await ReadRemoteEventAsync(client, eventUri, uid, tag, true, token).ConfigureAwait(false);
+			if (!MatchesEvent(desired, verified))
+			{
+				throw new CalDavDataException("EventContentMismatch");
+			}
+			metrics.Verified++;
+		}
+
+		metrics.Stage = "StaleCleanup";
+		var stale = CalendarRules.GetStaleManagedUids(_sourceId, remote.Keys, outlookEvents.Keys);
+		metrics.StaleCandidates = stale.Count;
+		if (stale.Count > 0)
+		{
+			_tray?.SetDeleting();
+		}
+		var ownedStale = new List<RemoteResource>();
+		foreach (var uid in stale)
+		{
+			var resource = remote[uid];
+			try
+			{
+				await ReadRemoteEventAsync(client, resource.Uri, uid, resource.ETag, false, token).ConfigureAwait(false);
+				ownedStale.Add(resource);
+			}
+			catch (CalDavDataException ex) when (ex.Reason == "EventIdentityMismatch")
+			{
+				metrics.OwnershipSkipped++;
+			}
+		}
+		foreach (var resource in ownedStale)
+		{
+			await DeleteResourceAsync(client, resource, "stale event deletion", token).ConfigureAwait(false);
+			metrics.Deleted++;
 		}
 	}
 }

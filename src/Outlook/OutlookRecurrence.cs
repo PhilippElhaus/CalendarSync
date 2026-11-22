@@ -33,21 +33,21 @@ public partial class CalendarSyncService
 
 		try
 		{
-			var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"series '{appt.Subject}' start");
-			var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"series '{appt.Subject}' end");
-			var seriesAllDay = DetermineAllDay(baseStartLocal, baseEndLocal, appt.AllDayEvent);
+			var allDay = appt.AllDayEvent;
+			var (baseStartLocal, baseStartUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, allDay);
+			var (baseEndLocal, baseEndUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, allDay);
+			var seriesAllDay = DetermineAllDay(baseStartLocal, baseEndLocal, allDay);
 
-			var rule = BuildRecurrenceRule(pattern, appt.Subject, seriesAllDay);
+			var rule = BuildRecurrenceRule(pattern, seriesAllDay);
 			if (rule == null)
 			{
 				return new RecurrenceExpansionResult(results, false);
 			}
 
 			var baseDuration = baseEndUtc - baseStartUtc;
-			if (baseDuration <= TimeSpan.Zero)
+			if (baseDuration < TimeSpan.Zero)
 			{
-				_logger.LogWarning("Recurrence duration invalid for '{Subject}'. Falling back to 30 minutes.", appt.Subject);
-				baseDuration = TimeSpan.FromMinutes(30);
+				return new RecurrenceExpansionResult(results, false);
 			}
 
 			var baseLocalDuration = baseEndLocal - baseStartLocal;
@@ -78,11 +78,11 @@ public partial class CalendarSyncService
 			};
 
 			var skipDates = new HashSet<DateTime>();
-			var exceptionsComplete = ProcessRecurrenceExceptions(pattern, appt, from, to, results, skipDates, token);
+			var exceptionsComplete = ProcessRecurrenceExceptions(pattern, from, to, results, skipDates, token);
 
 			token.ThrowIfCancellationRequested();
 
-			var fromLocal = DateTime.SpecifyKind(from, DateTimeKind.Unspecified);
+			var fromLocal = DateTime.SpecifyKind(from - baseLocalDuration, DateTimeKind.Unspecified);
 			var toLocal = DateTime.SpecifyKind(to, DateTimeKind.Unspecified);
 			var fromCal = new CalDateTime(fromLocal, !seriesAllDay);
 			var toCal = new CalDateTime(toLocal, !seriesAllDay);
@@ -90,7 +90,7 @@ public partial class CalendarSyncService
 				.GetOccurrences(fromCal)
 				.TakeWhile(o => o.Period.StartTime == null || o.Period.StartTime.CompareTo(toCal) < 0)
 				.Where(o => o.Period.StartTime != null);
-			var calculatedComplete = AddCalculatedOccurrences(results, appt, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay, token);
+			var calculatedComplete = AddCalculatedOccurrences(results, occurrences, skipDates, baseDuration, baseLocalDuration, baseStartLocal, seriesAllDay, token);
 
 			return new RecurrenceExpansionResult(results, exceptionsComplete && calculatedComplete);
 		}

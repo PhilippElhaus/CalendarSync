@@ -21,33 +21,20 @@ public partial class CalendarSyncService
 		var shouldReleaseMaster = false;
 		var globalId = appt.GlobalAppointmentID;
 
-		var recurrenceState = Outlook.OlRecurrenceState.olApptMaster;
-		try
-		{
-			recurrenceState = appt.RecurrenceState;
-		}
-		catch (COMException ex)
-		{
-			_logger.LogDebug(ex, "Failed to read recurrence state for '{Subject}'. Assuming master.", appt.Subject);
-		}
+		var recurrenceState = appt.RecurrenceState;
 
 		if (recurrenceState != Outlook.OlRecurrenceState.olApptMaster)
 		{
 			(seriesItem, masterItem, shouldReleaseMaster, globalId) = ResolveMasterAppointment(appt, globalId);
 		}
 
-		if (string.IsNullOrEmpty(globalId))
-		{
-			globalId = appt.GlobalAppointmentID;
-		}
-
-		if (string.IsNullOrEmpty(globalId))
-		{
-			globalId = Guid.NewGuid().ToString();
-		}
-
 		try
 		{
+			if (string.IsNullOrWhiteSpace(globalId))
+			{
+				return false;
+			}
+
 			if (!expandedRecurringIds.Add(globalId))
 			{
 				return true;
@@ -57,14 +44,14 @@ public partial class CalendarSyncService
 			var patternEnd = syncEnd.AddDays(_config.RecurrenceExpansionDaysFuture);
 			var expansion = ExpandRecurrenceManually(seriesItem, patternStart, patternEnd, token);
 			var baseSubject = seriesItem.Subject ?? string.Empty;
-			var baseBody = ReadOutlookBodyIfEnabled(seriesItem, $"recurring '{baseSubject}'");
+			var baseBody = ReadOutlookBodyIfEnabled(seriesItem);
 			var baseLocation = seriesItem.Location ?? string.Empty;
 
 			foreach (var occurrence in expansion.Occurrences)
 			{
 				token.ThrowIfCancellationRequested();
 
-				if (occurrence.StartLocal < syncStart || occurrence.StartLocal > syncEnd)
+				if (!CalendarRules.OverlapsWindow(occurrence.StartLocal, occurrence.EndLocal, syncStart, syncEnd))
 				{
 					continue;
 				}
@@ -82,8 +69,7 @@ public partial class CalendarSyncService
 					globalId,
 					occurrence.IsAllDay,
 					bodyWasRead);
-				dto = EnsureEventConsistency(dto, $"recurring '{dto.Subject}'");
-				AddEventChunks(events, globalId, dto);
+				AddSnapshotEvent(events, dto);
 			}
 
 			return expansion.IsComplete;
@@ -104,29 +90,19 @@ public partial class CalendarSyncService
 		try
 		{
 			pattern = appt.GetRecurrencePattern();
-			if (pattern?.Parent is Outlook.AppointmentItem parent)
+			masterItem = pattern?.Parent as Outlook.AppointmentItem;
+			shouldReleaseMaster = masterItem != null && !ReferenceEquals(masterItem, appt);
+			if (masterItem == null || masterItem.RecurrenceState != Outlook.OlRecurrenceState.olApptMaster)
 			{
-				masterItem = parent;
-				if (!ReferenceEquals(parent, appt))
-				{
-					shouldReleaseMaster = true;
-					seriesItem = parent;
-				}
-				try
-				{
-					if (!string.IsNullOrEmpty(parent.GlobalAppointmentID))
-					{
-						globalId = parent.GlobalAppointmentID;
-					}
-				}
-				catch (COMException)
-				{
-				}
+				throw new InvalidDataException("Outlook recurrence master could not be resolved.");
 			}
+			seriesItem = masterItem;
+			globalId = masterItem.GlobalAppointmentID;
 		}
-		catch (COMException ex)
+		catch
 		{
-			_logger.LogDebug(ex, "Failed to resolve master item for '{Subject}'.", appt.Subject);
+			ReleaseIfNeeded(masterItem, shouldReleaseMaster);
+			throw;
 		}
 		finally
 		{

@@ -1,115 +1,202 @@
 using Ical.Net;
 using Ical.Net.CalendarComponents;
-using Ical.Net.DataTypes;
-using Microsoft.Extensions.Logging;
-using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
 
-
 namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private async Task<Dictionary<string, string>> GetICloudEventsAsync(HttpClient client, string calendarUrl, string? sourceId, CancellationToken token)
-	{
-		const string requestBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><d:propfind xmlns:d=\"DAV:\" xmlns:cs=\"http://calendarserver.org/ns/\"><d:prop><d:getetag/><cs:getctag/></d:prop></d:propfind>";
+	internal sealed record RemoteResource(string Name, Uri Uri, EntityTagHeaderValue ETag);
 
-		try
+	private async Task<Dictionary<string, RemoteResource>> GetICloudEventsAsync(HttpClient client, Uri calendarUri, string? sourceId, CancellationToken token)
+	{
+		const string requestBody = "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:getetag/><d:resourcetype/></d:prop></d:propfind>";
+		using var response = await SendCalDavAsync(client, () =>
 		{
-			using var response = await SendCalDavAsync(
-				client,
-				() =>
-				{
-					var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), calendarUrl)
-					{
-						Content = new StringContent(requestBody, Encoding.UTF8, "application/xml")
-					};
-					request.Headers.Add("Depth", "1");
-					return request;
-				},
-				"calendar listing",
-				token).ConfigureAwait(false);
-			var events = await ReadICloudEventsAsync(response.Content, sourceId, token).ConfigureAwait(false);
-			_logger.LogInformation("Parsed {Count} events from PROPFIND response.", events.Count);
-			return events;
-		}
-		catch (HttpRequestException ex)
-		{
-			_logger.LogError(ex, "Failed to retrieve iCloud PROPFIND response.");
-			EventRecorder.WriteEntry("iCloud PROPFIND failed", EventLogEntryType.Error);
-			throw;
-		}
-		catch (XmlException ex)
-		{
-			_logger.LogError(ex, "Failed to parse iCloud PROPFIND response.");
-			EventRecorder.WriteEntry("iCloud response parse failed", EventLogEntryType.Error);
-			throw new InvalidOperationException("iCloud PROPFIND response was not valid XML.", ex);
-		}
+			var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), calendarUri)
+			{
+				Content = new StringContent(requestBody, Encoding.UTF8, "application/xml")
+			};
+			request.Headers.Add("Depth", "1");
+			return request;
+		}, "calendar listing", token).ConfigureAwait(false);
+		return await ReadICloudEventsAsync(response, calendarUri, sourceId, token).ConfigureAwait(false);
 	}
 
-	internal static async Task<Dictionary<string, string>> ReadICloudEventsAsync(HttpContent responseContent, string? sourceId, CancellationToken token)
+	internal static async Task<Dictionary<string, RemoteResource>> ReadICloudEventsAsync(
+		HttpResponseMessage response, Uri calendarUri, string? sourceId, CancellationToken token)
 	{
-		var events = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		var content = await responseContent.ReadAsStringAsync(token).ConfigureAwait(false);
-		var document = XDocument.Parse(content);
+		if (response.StatusCode != HttpStatusCode.MultiStatus || response.Headers.Contains("Link") ||
+			response.Content.Headers.ContentRange != null)
+		{
+			throw new CalDavDataException("ListingIncomplete");
+		}
+
+		XDocument document;
+		try
+		{
+			var content = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+			using var reader = XmlReader.Create(new StringReader(content), new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit });
+			document = XDocument.Load(reader);
+		}
+		catch (XmlException)
+		{
+			throw new CalDavDataException("ListingMalformed");
+		}
 
 		XNamespace dav = "DAV:";
-		foreach (var responseElement in document.Descendants(dav + "response"))
+		var root = document.Root;
+		if (root?.Name != dav + "multistatus" || root.Descendants(dav + "error").Any() ||
+			root.Elements().Any(element => element.Name != dav + "response" && element.Name != dav + "responsedescription"))
 		{
-			var href = responseElement.Element(dav + "href")?.Value;
-			if (string.IsNullOrEmpty(href) || !href.EndsWith(".ics", StringComparison.OrdinalIgnoreCase))
+			throw new CalDavDataException("ListingIncomplete");
+		}
+
+		var resources = new Dictionary<string, RemoteResource>(StringComparer.OrdinalIgnoreCase);
+		var collectionSeen = false;
+		foreach (var entry in root.Elements(dav + "response"))
+		{
+			token.ThrowIfCancellationRequested();
+			var hrefs = entry.Elements(dav + "href").ToArray();
+			if (hrefs.Length != 1 || string.IsNullOrWhiteSpace(hrefs[0].Value) ||
+				!Uri.TryCreate(calendarUri, hrefs[0].Value, out var uri) ||
+				uri.Scheme != calendarUri.Scheme || !uri.Authority.Equals(calendarUri.Authority, StringComparison.OrdinalIgnoreCase) ||
+				uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0 ||
+				entry.Element(dav + "status") != null)
+			{
+				throw new CalDavDataException("ListingResourceInvalid");
+			}
+
+			var properties = entry.Elements(dav + "propstat")
+				.Where(propstat => IsDavSuccess(propstat.Element(dav + "status")?.Value))
+				.SelectMany(propstat => propstat.Elements(dav + "prop")).ToArray();
+			if (properties.Length == 0)
+			{
+				throw new CalDavDataException("ListingResourceInvalid");
+			}
+			var path = uri.AbsolutePath;
+			if (string.Equals(path.TrimEnd('/'), calendarUri.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal))
+			{
+				if (!properties.Elements(dav + "resourcetype").Elements(dav + "collection").Any())
+				{
+					throw new CalDavDataException("ListingIncomplete");
+				}
+				if (collectionSeen)
+				{
+					throw new CalDavDataException("ListingDuplicate");
+				}
+				collectionSeen = true;
+				continue;
+			}
+
+			if (!path.StartsWith(calendarUri.AbsolutePath, StringComparison.Ordinal))
+			{
+				throw new CalDavDataException("ListingResourceInvalid");
+			}
+			var segment = path[calendarUri.AbsolutePath.Length..];
+			var name = Uri.UnescapeDataString(segment.TrimEnd('/'));
+			if (name.Length == 0 || name.Contains('/') || name.Contains('\\') || name is "." or "..")
+			{
+				throw new CalDavDataException("ListingResourceInvalid");
+			}
+			if (properties.Elements(dav + "resourcetype").Elements(dav + "collection").Any())
+			{
+				continue;
+			}
+			if (segment.EndsWith('/'))
+			{
+				throw new CalDavDataException("ListingResourceInvalid");
+			}
+			if (!name.EndsWith(".ics", StringComparison.OrdinalIgnoreCase))
 			{
 				continue;
 			}
 
-			var uid = href[(href.LastIndexOf('/') + 1)..^4];
+			var uid = name[..^4];
 			if (sourceId != null && !CalendarRules.IsManagedUid(sourceId, uid))
 			{
 				continue;
 			}
+			var tags = properties.Elements(dav + "getetag").ToArray();
+			if (tags.Length != 1 || !EntityTagHeaderValue.TryParse(tags[0].Value, out var etag) || !IsStrongTag(etag))
+			{
+				throw new CalDavDataException("ListingETagInvalid");
+			}
+			if (!resources.TryAdd(uid, new RemoteResource(uid, uri, etag!)))
+			{
+				throw new CalDavDataException("ListingDuplicate");
+			}
+		}
+		if (!collectionSeen)
+		{
+			throw new CalDavDataException("ListingIncomplete");
+		}
+		return resources;
+	}
 
-			var propStat = responseElement.Element(dav + "propstat");
-			var prop = propStat?.Element(dav + "prop");
-			var etag = prop?.Element(dav + "getetag")?.Value ?? string.Empty;
-			events[uid] = etag;
+	private static bool IsDavSuccess(string? status) =>
+		status?.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [var protocol, "200", ..] &&
+		protocol.StartsWith("HTTP/", StringComparison.Ordinal);
+
+	private static bool IsStrongTag(EntityTagHeaderValue? value) => value is { IsWeak: false } && value.Tag != "*";
+
+	private async Task<CalendarEvent> ReadRemoteEventAsync(HttpClient client, Uri uri, string uid,
+		EntityTagHeaderValue? expectedTag, bool verification, CancellationToken token)
+	{
+		using var response = await SendCalDavAsync(client, () =>
+		{
+			var request = new HttpRequestMessage(HttpMethod.Get, uri);
+			if (expectedTag != null)
+			{
+				request.Headers.IfMatch.Add(expectedTag);
+			}
+			return request;
+		}, verification ? "event verification read" : "event comparison read", token, retryVerificationAccess: verification).ConfigureAwait(false);
+		if (response.StatusCode != HttpStatusCode.OK || !IsStrongTag(response.Headers.ETag))
+		{
+			throw new CalDavDataException("EventReadInvalid");
+		}
+		if (expectedTag != null && !expectedTag.Equals(response.Headers.ETag))
+		{
+			throw new CalDavDataException("EventRevisionChanged");
 		}
 
-		return events;
-	}
-
-	private async Task<string> GetICloudEventDescriptionAsync(HttpClient client, string eventUrl, CancellationToken token)
-	{
-		using var response = await SendCalDavAsync(
-			client,
-			() => new HttpRequestMessage(HttpMethod.Get, eventUrl),
-			"event description read",
-			token).ConfigureAwait(false);
-
 		var ics = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-		var calendar = Calendar.Load(ics);
-		var calendarEvent = calendar?.Events?.FirstOrDefault()
-			?? throw new InvalidDataException("The existing iCloud event contained no VEVENT while preserving its description.");
-		return calendarEvent.Description ?? string.Empty;
-	}
-
-	private CalendarEvent CreateCalendarEvent(OutlookEventDto appt, string uid)
-	{
-		return CalendarRules.CreateCalendarEvent(appt, uid, _tag);
+		Calendar? calendar;
+		try
+		{
+			calendar = Calendar.Load(ics);
+		}
+		catch (Exception ex) when (ex is not OperationCanceledException)
+		{
+			throw new CalDavDataException("EventMalformed");
+		}
+		if (calendar?.Events.Count != 1 || !string.Equals(calendar.Events.First().Uid, uid, StringComparison.Ordinal))
+		{
+			throw new CalDavDataException("EventIdentityMismatch");
+		}
+		return calendar.Events.First();
 	}
 
 	private HttpClient CreateHttpClient()
 	{
-		var client = new HttpClient
+		var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
 		{
-			Timeout = TimeSpan.FromSeconds(90)
+			Timeout = TimeSpan.FromSeconds(90),
+			MaxResponseContentBufferSize = 32 * 1024 * 1024
 		};
 		var credentials = Encoding.UTF8.GetBytes($"{_config.ICloudUser}:{_config.ICloudPassword}");
 		client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(credentials));
 		client.DefaultRequestHeaders.Add("User-Agent", "CalendarSyncService");
 		return client;
 	}
+}
+
+internal sealed class CalDavDataException(string reason) : Exception(reason)
+{
+	internal string Reason { get; } = reason;
 }

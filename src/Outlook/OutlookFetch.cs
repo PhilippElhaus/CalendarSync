@@ -23,12 +23,11 @@ public partial class CalendarSyncService
 
 		try
 		{
-			return StaTask.Run(() => FetchOutlookEventsOnStaThread(cts), cts.Token);
+			return StaTask.Run(() => FetchOutlookEventsOnStaThread(cts), cts.Token, () => ReleaseOutlookScan(cts));
 		}
 		catch
 		{
-			_outlookComGate.Release();
-			cts.Dispose();
+			ReleaseOutlookScan(cts);
 			throw;
 		}
 	}
@@ -116,15 +115,18 @@ public partial class CalendarSyncService
 				return OutlookSnapshot.Incomplete();
 			}
 
-			rawItems.IncludeRecurrences = true;
 			rawItems.Sort("[Start]");
+			rawItems.IncludeRecurrences = true;
 
-			var start = DateTime.Today.AddDays(-_config.SyncDaysIntoPast);
-			var end = DateTime.Today.AddDays(_config.SyncDaysIntoFuture);
-			var filter = $"[Start] <= '{end:g}' AND [End] >= '{start:g}'";
+			var sourceToday = ConvertUtcToSourceLocal(DateTime.UtcNow).Date;
+			var start = sourceToday.AddDays(-_config.SyncDaysIntoPast);
+			var end = sourceToday.AddDays(_config.SyncDaysIntoFuture + 1);
+			var scanStart = start.AddDays(-2);
+			var scanEnd = end.AddDays(2);
+			var filter = $"[Start] < '{scanEnd:g}' AND [End] >= '{scanStart:g}'";
 			restrictedItems = rawItems.Restrict(filter);
 
-			_logger.LogDebug("Applied Outlook Restrict filter: {Filter}", filter);
+			_logger.LogDebug("Applied Outlook date filter.");
 
 			try
 			{
@@ -178,7 +180,7 @@ public partial class CalendarSyncService
 			}
 
 			_logger.LogInformation("Collected {Count} Outlook items after the date filter.", allItems.Count);
-			var snapshot = GetOutlookEventsFromList(allItems, cts.Token);
+			var snapshot = GetOutlookEventsFromList(allItems, start, end, cts.Token);
 			var totalFailures = snapshot.FailedItemCount + scanFailures;
 			var complete = snapshot.IsComplete && totalFailures == 0 && !hitItemLimit;
 
@@ -205,9 +207,14 @@ public partial class CalendarSyncService
 				ReleaseComObject(restrictedItems, "restricted Outlook items");
 			}
 			CleanupOutlook(outlookApp, outlookNs, calendar, rawItems);
-			_outlookComGate.Release();
-			cts.Dispose();
+			ReleaseOutlookScan(cts);
 		}
+	}
+
+	private void ReleaseOutlookScan(CancellationTokenSource cts)
+	{
+		_outlookComGate.Release();
+		cts.Dispose();
 	}
 
 	private void ReleaseOutlookAppointmentItems(IEnumerable<Outlook.AppointmentItem> appointments)

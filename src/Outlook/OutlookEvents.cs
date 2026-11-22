@@ -5,15 +5,12 @@ namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private OutlookSnapshot GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts, CancellationToken token)
+	private OutlookSnapshot GetOutlookEventsFromList(List<Outlook.AppointmentItem> appts,
+		DateTime syncStart, DateTime syncEnd, CancellationToken token)
 	{
 		var events = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
 		var expandedRecurringIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var failedItemCount = 0;
-
-		var sourceToday = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sourceTimeZone).Date;
-		var syncStart = sourceToday.AddDays(-_config.SyncDaysIntoPast);
-		var syncEnd = sourceToday.AddDays(_config.SyncDaysIntoFuture);
 
 		foreach (var appt in appts)
 		{
@@ -21,7 +18,7 @@ public partial class CalendarSyncService
 
 			try
 			{
-				if (appt.MeetingStatus == Outlook.OlMeetingStatus.olMeetingCanceled)
+				if (appt.MeetingStatus is Outlook.OlMeetingStatus.olMeetingCanceled or Outlook.OlMeetingStatus.olMeetingReceivedAndCanceled)
 				{
 					continue;
 				}
@@ -35,15 +32,16 @@ public partial class CalendarSyncService
 					continue;
 				}
 
-				var (startLocal, startUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, $"'{appt.Subject}' start");
-				var (endLocal, endUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, $"'{appt.Subject}' end");
+				var allDay = appt.AllDayEvent;
+				var (startLocal, startUtc) = NormalizeOutlookTimes(appt.Start, appt.StartUTC, allDay);
+				var (endLocal, endUtc) = NormalizeOutlookTimes(appt.End, appt.EndUTC, allDay);
 
-				if (endLocal < syncStart || startLocal > syncEnd)
+				if (!CalendarRules.OverlapsWindow(startLocal, endLocal, syncStart, syncEnd))
 				{
 					continue;
 				}
 
-				var body = ReadOutlookBodyIfEnabled(appt, $"single '{appt.Subject}'");
+				var body = ReadOutlookBodyIfEnabled(appt);
 				var dtoSingle = new OutlookEventDto(
 					appt.Subject ?? string.Empty,
 					body.Body,
@@ -52,13 +50,12 @@ public partial class CalendarSyncService
 					endLocal,
 					startUtc,
 					endUtc,
-					appt.GlobalAppointmentID ?? Guid.NewGuid().ToString(),
-					appt.AllDayEvent,
+					appt.GlobalAppointmentID,
+					allDay,
 					body.WasRead
 				);
 
-				dtoSingle = EnsureEventConsistency(dtoSingle, $"single '{appt.Subject}'");
-				AddEventChunks(events, dtoSingle.GlobalId ?? appt.GlobalAppointmentID ?? Guid.NewGuid().ToString(), dtoSingle);
+				AddSnapshotEvent(events, dtoSingle);
 			}
 			catch (OperationCanceledException)
 			{
@@ -71,11 +68,10 @@ public partial class CalendarSyncService
 			}
 		}
 
-		var deduplicated = DeduplicateEvents(events);
-		return new OutlookSnapshot(deduplicated, failedItemCount == 0, failedItemCount, false);
+		return new OutlookSnapshot(events, failedItemCount == 0, failedItemCount, false);
 	}
 
-	private void AddEventChunks(Dictionary<string, OutlookEventDto> events, string baseUid, OutlookEventDto dto)
+	private void AddSnapshotEvent(Dictionary<string, OutlookEventDto> events, OutlookEventDto dto)
 	{
 		var sanitizedDto = dto with
 		{
@@ -85,40 +81,12 @@ public partial class CalendarSyncService
 			EndUtc = DateTime.SpecifyKind(dto.EndUtc, DateTimeKind.Utc)
 		};
 
-		var managedUid = BuildManagedUid(baseUid, sanitizedDto);
-		events[managedUid] = sanitizedDto;
-	}
-
-	private string BuildManagedUid(string baseUid, OutlookEventDto dto)
-	{
-		var startUtc = dto.StartUtc != DateTime.MinValue ? dto.StartUtc : ConvertFromSourceLocalToUtc(dto.StartLocal, "uid build fallback");
-		return CalendarRules.BuildManagedUid(_sourceId, baseUid, startUtc);
-	}
-
-	private Dictionary<string, OutlookEventDto> DeduplicateEvents(Dictionary<string, OutlookEventDto> events)
-	{
-		var deduped = new Dictionary<string, OutlookEventDto>(StringComparer.OrdinalIgnoreCase);
-		var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-		foreach (var (uid, dto) in events)
+		var uid = CalendarRules.BuildManagedUid(_sourceId, dto.GlobalId, dto.StartUtc);
+		if (!events.ContainsKey(uid) &&
+			events.Count >= MaxOutlookItemsPerSnapshot)
 		{
-			if (dto == null)
-			{
-				continue;
-			}
-
-			var globalId = dto.GlobalId ?? string.Empty;
-			var signature = $"{globalId}|{dto.StartUtc:O}|{dto.EndUtc:O}";
-
-			if (!seenKeys.Add(signature))
-			{
-				_logger.LogWarning("Detected duplicate Outlook event for GlobalID {GlobalId} at {Start}. Dropping UID {Uid}.", globalId, dto.StartLocal, uid);
-				continue;
-			}
-
-			deduped[uid] = dto;
+			throw new InvalidDataException("Outlook snapshot exceeded the event limit.");
 		}
-
-		return deduped;
+		CalendarRules.AddSnapshotEvent(events, uid, sanitizedDto);
 	}
 }

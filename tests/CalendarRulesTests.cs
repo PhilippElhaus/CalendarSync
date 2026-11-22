@@ -100,6 +100,54 @@ public sealed class CalendarRulesTests
 			CalendarRules.ConvertSourceLocalToUtc(ambiguousLocal, berlin));
 	}
 
+	[Fact]
+	public void AllDayDatesDoNotShiftAcrossSourceTimeZones()
+	{
+		var local = new DateTime(2026, 9, 1);
+		var utc = new DateTime(2026, 8, 31, 22, 0, 0, DateTimeKind.Utc);
+		var zone = TimeZoneInfo.Utc;
+		Assert.Equal((local, utc), CalendarRules.NormalizeOutlookTime(local, utc, zone, true));
+		Assert.Equal((utc, utc), CalendarRules.NormalizeOutlookTime(local, utc, zone, false));
+		Assert.Throws<InvalidDataException>(() => CalendarRules.NormalizeOutlookTime(default, default, zone, false));
+	}
+
+	[Fact]
+	public void SnapshotWindowIncludesOverlapButNotTheExclusiveEnd()
+	{
+		var lower = new DateTime(2026, 8, 30);
+		var upper = lower.AddDays(1);
+		Assert.True(CalendarRules.OverlapsWindow(lower.AddDays(-1), lower.AddHours(5), lower, upper));
+		Assert.True(CalendarRules.OverlapsWindow(upper.AddMinutes(-1), upper, lower, upper));
+		Assert.True(CalendarRules.OverlapsWindow(lower, lower, lower, upper));
+		Assert.False(CalendarRules.OverlapsWindow(lower.AddDays(-1), lower, lower, upper));
+		Assert.False(CalendarRules.OverlapsWindow(upper, upper.AddDays(1), lower, upper));
+	}
+
+	[Fact]
+	public void MultiDayTimedEventHasNoReminders()
+	{
+		var dto = CreateTimedDto();
+		dto = dto with { EndLocal = dto.EndLocal.AddDays(1), EndUtc = dto.EndUtc.AddDays(1) };
+		var calendarEvent = CalendarRules.CreateCalendarEvent(dto, "synthetic-uid", null);
+		Assert.False(calendarEvent.IsAllDay);
+		Assert.Empty(calendarEvent.Alarms);
+	}
+
+	[Fact]
+	public void ConflictingDuplicateIsRejectedAndUnreadBodyDoesNotOverwriteKnownBody()
+	{
+		var dto = CreateTimedDto();
+		var unread = dto with { Body = "", BodyWasRead = false };
+		var events = new Dictionary<string, OutlookEventDto>();
+		CalendarRules.AddSnapshotEvent(events, "synthetic-uid", unread);
+		CalendarRules.AddSnapshotEvent(events, "synthetic-uid", dto);
+		CalendarRules.AddSnapshotEvent(events, "synthetic-uid", unread);
+		Assert.Equal(dto, events["synthetic-uid"]);
+		Assert.Throws<InvalidDataException>(() => CalendarRules.AddSnapshotEvent(events, "synthetic-uid", dto with { Subject = "Different" }));
+		Assert.Throws<InvalidDataException>(() => CalendarRules.BuildManagedUid("fixture", "", dto.StartUtc));
+		Assert.Equal(dto, Assert.Single(events).Value);
+	}
+
 	private static OutlookEventDto CreateTimedDto() =>
 		new(
 			"Meeting",

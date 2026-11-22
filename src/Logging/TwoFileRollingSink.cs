@@ -28,7 +28,7 @@ public sealed class TwoFileRollingSink : ILogEventSink, IDisposable
 		}
 		_fileSizeLimitBytes = fileSizeLimitBytes;
 		_formatter = new MessageTemplateTextFormatter(
-			"{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+			"{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SyncCycleId} {Message:lj}{NewLine}",
 			CultureInfo.InvariantCulture);
 	}
 
@@ -47,11 +47,20 @@ public sealed class TwoFileRollingSink : ILogEventSink, IDisposable
 		}
 
 		var bytesToWrite = LogEncoding.GetByteCount(formatted);
+		if (bytesToWrite > _fileSizeLimitBytes)
+		{
+			formatted = "CalendarSync dropped an oversized log entry." + Environment.NewLine;
+			bytesToWrite = LogEncoding.GetByteCount(formatted);
+			if (bytesToWrite > _fileSizeLimitBytes)
+			{
+				return;
+			}
+		}
 
 		lock (_syncRoot)
 		{
 			EnsureWriter();
-			if (_currentSize + bytesToWrite > _fileSizeLimitBytes)
+			if (bytesToWrite > _fileSizeLimitBytes - _currentSize)
 			{
 				Roll();
 			}
@@ -98,7 +107,11 @@ public sealed class TwoFileRollingSink : ILogEventSink, IDisposable
 		_writer?.Dispose();
 		_writer = null;
 
-		if (File.Exists(_logPath))
+		if (_currentSize > _fileSizeLimitBytes)
+		{
+			File.Delete(_logPath);
+		}
+		else if (File.Exists(_logPath))
 		{
 			File.Move(_logPath, _oldLogPath, true);
 		}

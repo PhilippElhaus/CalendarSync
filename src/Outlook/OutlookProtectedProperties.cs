@@ -26,11 +26,10 @@ public partial class CalendarSyncService
 		Snooze = 3
 	}
 
-	private OutlookBodyReadResult ReadOutlookBodyIfEnabled(Outlook.AppointmentItem appt, string context)
+	private OutlookBodyReadResult ReadOutlookBodyIfEnabled(Outlook.AppointmentItem appt)
 	{
-		if (!CanReadOutlookBodyWithoutPrompt(out var reason))
+		if (!CanReadOutlookBodyWithoutPrompt(out _))
 		{
-			_logger.LogDebug("Skipping Outlook body for {Context}: {Reason}", context, reason);
 			return new OutlookBodyReadResult(string.Empty, false);
 		}
 
@@ -40,7 +39,7 @@ public partial class CalendarSyncService
 		}
 		catch (COMException ex)
 		{
-			_logger.LogWarning(ex, "Unable to read Outlook body for {Context}; continuing without a description.", context);
+			_logger.LogDebug("Outlook body unavailable. Code=0x{Code:X8}.", ex.HResult);
 			return new OutlookBodyReadResult(string.Empty, false);
 		}
 	}

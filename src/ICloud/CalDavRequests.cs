@@ -19,12 +19,13 @@ internal static class CalDavRequests
 		{
 			token.ThrowIfCancellationRequested();
 			using var request = requestFactory();
+			var readOnly = request.Method == HttpMethod.Get || request.Method.Method == "PROPFIND";
 
 			try
 			{
 				var response = await client.SendAsync(
 					request,
-					HttpCompletionOption.ResponseHeadersRead,
+					readOnly ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead,
 					token).ConfigureAwait(false);
 
 				if (response.IsSuccessStatusCode)
@@ -44,7 +45,7 @@ internal static class CalDavRequests
 				var accessRejected = statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
 				var retryAccess = statusCode == HttpStatusCode.Unauthorized ||
 					(statusCode == HttpStatusCode.Forbidden && retryVerificationAccess && request.Method == HttpMethod.Get);
-				var shouldRetry = (IsTransientStatus(statusCode) || retryAccess) && attempt < MaxCalDavAttempts;
+				var shouldRetry = ((readOnly && IsTransientStatus(statusCode)) || retryAccess) && attempt < MaxCalDavAttempts;
 				response.Dispose();
 
 				if (!shouldRetry)
@@ -69,11 +70,10 @@ internal static class CalDavRequests
 					retryDelay.TotalMilliseconds);
 				await Task.Delay(retryDelay, token).ConfigureAwait(false);
 			}
-			catch (HttpRequestException ex) when (attempt < MaxCalDavAttempts && ex.StatusCode == null)
+			catch (HttpRequestException ex) when (readOnly && attempt < MaxCalDavAttempts && ex.StatusCode == null)
 			{
 				var retryDelay = TimeSpan.FromSeconds(attempt * 2);
 				logger.LogWarning(
-					ex,
 					"CalDAV {Operation} attempt {Attempt}/{MaxAttempts} failed at the transport layer. Retrying after {DelayMs} ms.",
 					operation,
 					attempt,
@@ -81,11 +81,11 @@ internal static class CalDavRequests
 					retryDelay.TotalMilliseconds);
 				await Task.Delay(retryDelay, token).ConfigureAwait(false);
 			}
-			catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+			catch (OperationCanceledException) when (!token.IsCancellationRequested)
 			{
-				if (attempt >= MaxCalDavAttempts)
+				if (!readOnly || attempt >= MaxCalDavAttempts)
 				{
-					throw new HttpRequestException($"CalDAV {operation} timed out.", ex);
+					throw new CalDavTimeoutException();
 				}
 
 				var retryDelay = TimeSpan.FromSeconds(attempt * 2);
@@ -133,3 +133,5 @@ internal static class CalDavRequests
 		return delay > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : delay;
 	}
 }
+
+internal sealed class CalDavTimeoutException : HttpRequestException;

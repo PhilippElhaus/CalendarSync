@@ -1,47 +1,42 @@
-using Microsoft.Extensions.Logging;
+using System.Net;
+
 namespace CalendarSync;
 
 public partial class CalendarSyncService
 {
-	private async Task WipeICloudCalendarAsync(HttpClient client, string calendarUrl, CancellationToken token)
+	private async Task WipeICloudCalendarAsync(HttpClient client, Uri calendarUri, CycleMetrics metrics, CancellationToken token)
 	{
-		_logger.LogInformation("Cleaning all existing iCloud events.");
-
-		var iCloudEvents = await GetICloudEventsAsync(client, calendarUrl, null, token).ConfigureAwait(false);
-		_logger.LogInformation("Found {Count} existing iCloud events to delete.", iCloudEvents.Count);
-
-		_tray.SetDeleting();
-		var total = iCloudEvents.Count;
-		var done = 0;
-
-		foreach (var iCloudUid in iCloudEvents.Keys.ToList())
+		metrics.Stage = "WipeListing";
+		var resources = await GetICloudEventsAsync(client, calendarUri, null, token).ConfigureAwait(false);
+		metrics.WipeListed = resources.Count;
+		metrics.Stage = "WipeDelete";
+		_tray?.SetDeleting();
+		foreach (var resource in resources.Values)
 		{
-			done++;
-			if (total > 0)
-			{
-				_tray.UpdateText($"Deleting... {done}/{total} ({done * 100 / total}%)");
-			}
-
-			var eventUrl = $"{calendarUrl}{iCloudUid}.ics";
+			_tray?.UpdateText($"Deleting... {metrics.WipeDeleted}/{resources.Count}");
 			await Task.Delay(300, token).ConfigureAwait(false);
-
-			using (await SendCalDavAsync(
-				client,
-				() => new HttpRequestMessage(HttpMethod.Delete, eventUrl),
-				"calendar wipe deletion",
-				token).ConfigureAwait(false))
-			{
-			}
-
-			_logger.LogDebug("Deleted iCloud event UID {Uid} during wipe.", iCloudUid);
+			await DeleteResourceAsync(client, resource, "calendar wipe deletion", token).ConfigureAwait(false);
+			metrics.WipeDeleted++;
 		}
 
-		if (total > 0)
+		if (metrics.WipeDeleted > 0)
 		{
-			_tray.UpdateText("Finalizing cleaning run...");
+			metrics.Stage = "WipeRecheckWait";
+			await Task.Delay(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
 		}
+	}
 
-		_logger.LogInformation("Finished iCloud calendar wipe. Waiting 30 seconds for cache to clear.");
-		await Task.Delay(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+	private async Task DeleteResourceAsync(HttpClient client, RemoteResource resource, string operation, CancellationToken token)
+	{
+		using var response = await SendCalDavAsync(client, () =>
+		{
+			var request = new HttpRequestMessage(HttpMethod.Delete, resource.Uri);
+			request.Headers.IfMatch.Add(resource.ETag);
+			return request;
+		}, operation, token).ConfigureAwait(false);
+		if (response.StatusCode is not (HttpStatusCode.NoContent or HttpStatusCode.OK))
+		{
+			throw new CalDavDataException("DeleteNotConfirmed");
+		}
 	}
 }

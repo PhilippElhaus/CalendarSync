@@ -57,8 +57,11 @@ internal static partial class CalendarRules
 	public static string BuildManagedUid(string sourceId, string baseUid, DateTime startUtc)
 	{
 		var prefix = string.IsNullOrWhiteSpace(sourceId) ? "outlook" : $"{sourceId}-outlook";
-		var baseKey = string.IsNullOrWhiteSpace(baseUid) ? Guid.Empty.ToString("N") : baseUid;
-		var baseHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(baseKey))).ToLowerInvariant();
+		if (string.IsNullOrWhiteSpace(baseUid) || startUtc == DateTime.MinValue)
+		{
+			throw new InvalidDataException("Outlook event has no stable identity.");
+		}
+		var baseHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(baseUid))).ToLowerInvariant();
 		var occurrenceMarker = DateTime.SpecifyKind(startUtc, DateTimeKind.Utc)
 			.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
 		return $"{prefix}-{baseHash}-{occurrenceMarker}";
@@ -110,7 +113,7 @@ internal static partial class CalendarRules
 			Description = appointment.Body ?? string.Empty
 		};
 
-		if (!isAllDay)
+		if (!isAllDay && appointment.EndLocal - appointment.StartLocal < TimeSpan.FromDays(1))
 		{
 			calendarEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT10M") });
 			calendarEvent.Alarms.Add(new Alarm { Action = AlarmAction.Display, Description = "Reminder", Trigger = new Trigger("-PT3M") });
@@ -131,6 +134,50 @@ internal static partial class CalendarRules
 		var specifiedUtc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
 		var local = TimeZoneInfo.ConvertTimeFromUtc(specifiedUtc, sourceTimeZone);
 		return DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+	}
+
+	internal static (DateTime Local, DateTime Utc) NormalizeOutlookTime(
+		DateTime local, DateTime utc, TimeZoneInfo sourceTimeZone, bool isAllDay)
+	{
+		if ((local == DateTime.MinValue && isAllDay) || (local == DateTime.MinValue && utc == DateTime.MinValue))
+		{
+			throw new InvalidDataException("Outlook event timestamp is missing.");
+		}
+		var normalizedUtc = utc == DateTime.MinValue
+			? ConvertSourceLocalToUtc(local, sourceTimeZone)
+			: DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+		var normalizedLocal = isAllDay ? DateTime.SpecifyKind(local, DateTimeKind.Unspecified)
+			: ConvertUtcToSourceLocal(normalizedUtc, sourceTimeZone);
+		return (normalizedLocal, normalizedUtc);
+	}
+
+	internal static bool OverlapsWindow(DateTime start, DateTime end, DateTime windowStart, DateTime windowEnd) =>
+		start < windowEnd && (end > windowStart || (start == end && start == windowStart));
+
+	internal static void AddSnapshotEvent(Dictionary<string, OutlookEventDto> events, string uid, OutlookEventDto dto)
+	{
+		if (dto.EndUtc < dto.StartUtc || (dto.IsAllDay && dto.EndLocal <= dto.StartLocal))
+		{
+			throw new InvalidDataException("Outlook event interval is invalid.");
+		}
+		if (events.TryAdd(uid, dto))
+		{
+			return;
+		}
+		var existing = events[uid];
+		if (existing == dto)
+		{
+			return;
+		}
+		if (existing.BodyWasRead != dto.BodyWasRead && existing with { Body = dto.Body, BodyWasRead = dto.BodyWasRead } == dto)
+		{
+			if (dto.BodyWasRead)
+			{
+				events[uid] = dto;
+			}
+			return;
+		}
+		throw new InvalidDataException("Outlook returned conflicting events with the same managed identity.");
 	}
 
 	public static List<string> GetStaleManagedUids(
